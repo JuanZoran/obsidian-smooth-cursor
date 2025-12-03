@@ -182,6 +182,13 @@ export default class SmoothCursorPlugin extends Plugin {
 		return document.querySelector('.cm-vimCursorLayer') !== null;
 	}
 
+	isVimNormalMode(i: number): boolean {
+		const editorEl = this.editorDom[i];
+		if (!editorEl) return false;
+
+		return editorEl.classList.contains("cm-fat-cursor") || !!editorEl.querySelector(".cm-fat-cursor");
+	}
+
 	isVisible(elem: HTMLElement) {
 		// 递归检查元素和所有父级是否都可见
 		return !!(elem.offsetParent);
@@ -464,7 +471,8 @@ export default class SmoothCursorPlugin extends Plugin {
 		}
 
 		//vim 模式下方块光标文本更新
-		if (this.isVimMode()) {
+		const isVimNormal = this.isVimMode() && this.isVimNormalMode(i);
+		if (isVimNormal) {
 			let str = this.getNextCharAfterCursor(isTitle);
 			if (str) {
 				this.vimText && (this.vimText[i].textContent = str.text);
