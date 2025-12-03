@@ -52,6 +52,7 @@ export default class SmoothCursorPlugin extends Plugin {
 	settingObserver: MutationObserver | null = null;
 
 	canvas: { [key: number]: HTMLCanvasElement } = {};
+	ctx: { [key: number]: CanvasRenderingContext2D | null } = {};
 
 	cursor: { [key: number]: HTMLElement } = {};
 	vimText: { [key: number]: HTMLElement } = {};
@@ -70,17 +71,17 @@ export default class SmoothCursorPlugin extends Plugin {
 
 	closeSettings: boolean = false;
 
-	private events: Partial<{
-		[K in keyof HTMLElementEventMap]: (this: HTMLElement, ev: HTMLElementEventMap[K]) => any;
-	}> = {};
+	lastRect: { [key: number]: { x: number, y: number, width: number, height: number } } = {};
 
-	test: DOMRect;
+	private events: WeakMap<HTMLElement, Partial<{
+		[K in keyof HTMLElementEventMap]: (this: HTMLElement, ev: HTMLElementEventMap[K]) => any;
+	}>> = new WeakMap();
 
 	// ----- trail ------
 
-	lastPos: { x: number, y: number, height: number }[] = [{ x: 0, y: 0, height: 0 }];
+	lastPos: { x: number, y: number, height: number, width: number }[] = [{ x: 0, y: 0, height: 0, width: 0 }];
 
-	lastPosForChangeFile: { x: number, y: number, height: number }[] = [{ x: 0, y: 0, height: 0 }];
+	lastPosForChangeFile: { x: number, y: number, height: number, width: number }[] = [{ x: 0, y: 0, height: 0, width: 0 }];
 
 	rectangle: { x: number, y: number, dirX: number, dirY: number, extTarget: number, extOrigin: number }[] =
 		[{ x: 0, y: 0, dirX: 0, dirY: 0, extTarget: 0, extOrigin: 0 }];
@@ -133,10 +134,10 @@ export default class SmoothCursorPlugin extends Plugin {
 						this.init(this.fileIndex[file.path]);
 					}, 10)
 					// console.log("重新初始化")
-				} else {
-					this.lastPosForChangeFile = [{ x: 0, y: 0, height: 0 }];
-					this.events = {};
-					this.uninit(0);
+					} else {
+						this.lastPosForChangeFile = [{ x: 0, y: 0, height: 0, width: 0 }];
+						this.events = new WeakMap();
+						this.uninit(0);
 
 				}
 			}));
@@ -178,15 +179,11 @@ export default class SmoothCursorPlugin extends Plugin {
 		return paths;
 	}
 
-	isVimMode(): boolean {
-		return document.querySelector('.cm-vimCursorLayer') !== null;
-	}
-
-	isVimNormalMode(i: number): boolean {
+	getVimState(i: number): { isVim: boolean; isNormal: boolean } {
 		const editorEl = this.editorDom[i];
-		if (!editorEl) return false;
-
-		return editorEl.classList.contains("cm-fat-cursor") || !!editorEl.querySelector(".cm-fat-cursor");
+		const isVim = document.querySelector('.cm-vimCursorLayer') !== null;
+		const isNormal = isVim && !!editorEl && (editorEl.classList.contains("cm-fat-cursor") || !!editorEl.querySelector(".cm-fat-cursor"));
+		return { isVim, isNormal };
 	}
 
 	isVisible(elem: HTMLElement) {
@@ -198,11 +195,18 @@ export default class SmoothCursorPlugin extends Plugin {
 	 * 监听事件 防止重复监听
 	 */
 	eventRegister<K extends keyof HTMLElementEventMap>(node: HTMLElement, key: K, func: (this: HTMLElement, ev: HTMLElementEventMap[K]) => any) {
-		let event = this.events[key];
-		if (!event) {
-			event = func as typeof this.events[typeof key];
-			this.events[key] = event;
+		let eventMap = this.events.get(node);
+		if (!eventMap) {
+			eventMap = {};
+			this.events.set(node, eventMap);
 		}
+
+		let event = eventMap[key];
+		if (!event) {
+			event = func as typeof event;
+			eventMap[key] = event;
+		}
+
 		this.registerDomEvent(node, key, event as (this: HTMLElement, ev: HTMLElementEventMap[K]) => any);
 	}
 
@@ -218,6 +222,8 @@ export default class SmoothCursorPlugin extends Plugin {
 		// this.canvas.splice(i, 1);
 		delete this.cursor[i];
 		delete this.canvas[i];
+		delete this.ctx[i];
+		delete this.lastRect[i];
 		this.trailCount[i] = 0;
 
 		this.stopObserving();
@@ -227,7 +233,6 @@ export default class SmoothCursorPlugin extends Plugin {
 		// console.log("初始化")
 		let ele = this.app.workspace.getActiveViewOfType(MarkdownView)?.leaf.view.containerEl.querySelector('.cm-editor') as HTMLElement;
 		this.editorDom[i] = ele;
-		this.test = ele.getBoundingClientRect();
 		// let eles = document.querySelectorAll('.cm-editor');
 		// for (let i = 0; i < eles.length; i++) {
 		// 	let el = eles[i] as HTMLElement;
@@ -238,7 +243,7 @@ export default class SmoothCursorPlugin extends Plugin {
 		// 	}
 		// }
 
-		if (!this.editorDom) {
+		if (!ele) {
 			console.error("未打开文档");
 			return;
 		}
@@ -338,50 +343,22 @@ export default class SmoothCursorPlugin extends Plugin {
 			this.updateCursor(i);
 		});
 
-
-		this.eventRegister(this.editorDom[i], "keydown", (evt) => {
-			// if (compositionStart && compositionUpdate) {
-			// 	compositionStart = compositionUpdate = false;
-			// 	return;
-			// }
-			let pos = this.updateCursor(i);
-			// console.log("keydown => ", pos)
-
+		["keydown", "keyup", "compositionstart", "compositionupdate", "compositionend"].forEach((evtName) => {
+			this.eventRegister(this.editorDom[i], evtName as keyof HTMLElementEventMap, () => {
+				this.updateCursor(i);
+			});
 		});
 
-		this.eventRegister(this.editorDom[i], "keyup", () => {
-			// if (compositionEnd) {
-			// 	compositionEnd = false;
-			// 	return;
-			// }
-			let pos = this.updateCursor(i);
-			// console.log("keyup => ", pos)
-			// compositionEnd = true;
-		});
-
-		this.eventRegister(this.editorDom[i], "compositionstart", (evt) => {
-			// compositionStart = true;
-			let pos = this.updateCursor(i);
-			// console.log("compositionupdate => ", pos)
-		});
-
-		this.eventRegister(this.editorDom[i], "compositionupdate", (evt) => {
-			// compositionUpdate = true;
-			let pos = this.updateCursor(i);
-			// console.log("compositionupdate => ", pos)
-		});
-
-		this.eventRegister(this.editorDom[i], "compositionend", (evt) => {
-			// compositionEnd = true;
-			let pos = this.updateCursor(i);
-			// console.log("compositionupdate => ", pos)
+		this.registerDomEvent(document, "selectionchange", () => {
+			this.updateCursor(i);
 		});
 
 		this.registerEvent(this.app.workspace.on("resize", () => {
 			// this.isResize = true;
-			if (this.canvas[i]) {
-				this.canvas[i].width = window.innerWidth;
-				this.canvas[i].height = window.innerHeight;
+			const rect = this.editorDom[i]?.getBoundingClientRect();
+			if (this.canvas[i] && rect) {
+				this.canvas[i].width = rect.width;
+				this.canvas[i].height = rect.height;
 			}
 
 			this.isScroll = true;
@@ -390,10 +367,13 @@ export default class SmoothCursorPlugin extends Plugin {
 
 		// let scroller = document.querySelector('.cm-scroller');
 
-		this.eventRegister(this.editorDom[i].querySelector(".cm-scroller") as HTMLElement, "scroll", () => {
-			this.isScroll = true;
-			this.updateCursor(i);
-		});
+		const scroller = this.editorDom[i].querySelector(".cm-scroller") as HTMLElement | null;
+		if (scroller) {
+			this.eventRegister(scroller, "scroll", () => {
+				this.isScroll = true;
+				this.updateCursor(i);
+			});
+		}
 
 		this.lastPos = this.lastPosForChangeFile;
 
@@ -426,14 +406,22 @@ export default class SmoothCursorPlugin extends Plugin {
 	 * 更新光标坐标
 	 */
 	updateCursor(i: number) {
-		if (!this.cursor[i] || !this.customStyle || this.curEditor != this.app.workspace.activeEditor) {
-			this.curEditor = this.app.workspace.activeEditor;
-			// console.log("未初始化或切换编辑器");
+		if (!this.cursor[i] || !this.customStyle) {
 			return;
 		}
 
+		if (this.curEditor != this.app.workspace.activeEditor) {
+			this.curEditor = this.app.workspace.activeEditor;
+		}
+
 		//判断点击的是文件名还是正文
-		let selection = window.getSelection() as Selection;
+		const selection = window.getSelection();
+		if (!selection || selection.rangeCount === 0) {
+			this.focus = false;
+			this.cursor[i]?.removeClass("show");
+			return;
+		}
+
 		let node = selection.getRangeAt(0).commonAncestorContainer;
 		let isTitle = false;
 		if (node.nodeType === Node.ELEMENT_NODE) {
@@ -470,10 +458,10 @@ export default class SmoothCursorPlugin extends Plugin {
 			this.cursor[i].removeClass("noTrans");
 		}
 
-		//vim 模式下方块光标文本更新
-		const isVimNormal = this.isVimMode() && this.isVimNormalMode(i);
-		if (isVimNormal) {
-			let str = this.getNextCharAfterCursor(isTitle);
+		//vim 模式下方块光标文本更新（标题处保持条状光标）
+		const { isNormal } = this.getVimState(i);
+		if (isNormal && !isTitle) {
+			let str = this.getNextCharAfterCursor(i, isTitle);
 			if (str) {
 				this.vimText && (this.vimText[i].textContent = str.text);
 				this.vimStyle.textContent = (this.vimStyle.textContent as string).replace(/(--vim-font-size:\s*[^;]+;)/, `--vim-font-size: ${str.size};`);
@@ -489,6 +477,7 @@ export default class SmoothCursorPlugin extends Plugin {
 		let content = (this.customStyle.textContent as string).replace(/(--cursor-x:\s*[^;]+;)/, `--cursor-x: ${pos.x + scrollX};`);
 		content = content.replace(/(--cursor-y:\s*[^;]+;)/, `--cursor-y: ${pos.y + scrollY};`);
 		content = content.replace(/(--cursor-height:\s*[^;]+;)/, `--cursor-height: ${pos.height};`);
+		content = content.replace(/(--cursor-width:\s*[^;]+;)/, `--cursor-width: ${pos.width};`);
 
 		this.customStyle.textContent = content;
 
@@ -520,72 +509,161 @@ export default class SmoothCursorPlugin extends Plugin {
 		return pos;
 	}
 
-	getNextCharAfterCursor(isTitle?: boolean) {
+	getNextCharAfterCursor(i: number, isTitle?: boolean) {
 		if (isTitle) {
 			return null;
 		} else {
 			const editor = this.app.workspace.activeEditor?.editor;
 			const cmView = (editor as Editor & { cm: cmEditor })?.cm as cmEditorExtention; // CM6 的 EditorView 实例
-			// console.log(cmView);
 			if (cmView && editor) {
 				const cursor = editor.getCursor();
 				const doc = cmView.state.doc;
 				const totalLines = doc.lines;
 
 				if (cursor.line + 1 >= totalLines) {
-					// console.log("已经是最后一行");
+					// 最后一行，没有下一字符
 				} else {
 					const nextLine = doc.line(cursor.line + 1);
 					const safeCh = Math.min(cursor.ch, nextLine.length);
 					const pos = nextLine.from + safeCh;
 
-					if (pos < nextLine.to) {
-						const char = doc.sliceString(pos, pos + 1);
-						// console.log("字符是：", char);
+						if (pos < nextLine.to) {
+							const char = doc.sliceString(pos, pos + 1);
 
-						// 获取光标位置的 DOM 元素
-						const coords = cmView.coordsAtPos(pos);
+							const coords = cmView.coordsAtPos(pos);
 						if (coords) {
-							// 获取光标所在的 DOM 元素
 							const cursorNode = document.elementFromPoint(coords.left, coords.top);
-
-							// 确保我们找到的是文本节点
 							if (cursorNode) {
-								// 获取该节点的字体大小
 								const fontSize = window.getComputedStyle(cursorNode).fontSize;
-								// console.log("当前字体大小是：", fontSize);
-
 								return {
 									text: char,
-									size: fontSize // 返回字体大小作为数字
+									size: fontSize
 								};
 							}
 						}
-					} else {
-						// console.log("已经在该行末尾，不能再取字符");
-						return null;
 					}
 				}
 			}
+			// fallback: end-of-line或无法获取字符时使用空格占位，避免退化为细条
+			const selection = window.getSelection();
+			let fontSize = "16px";
+			if (selection?.focusNode) {
+				const node = selection.focusNode.nodeType === Node.TEXT_NODE
+					? (selection.focusNode.parentElement as Element | null)
+					: (selection.focusNode as Element | null);
+				if (node) {
+					fontSize = window.getComputedStyle(node).fontSize || fontSize;
+				}
+			} else {
+				const cmContent = this.editorDom[i]?.querySelector(".cm-content") as HTMLElement | null;
+				if (cmContent) fontSize = window.getComputedStyle(cmContent).fontSize || fontSize;
+			}
+			return { text: "\u00A0", size: fontSize };
+		}
+	}
+
+	getTitleCharAfterCursor(selection: Selection) {
+		const range = selection.getRangeAt(0);
+		const node = range.startContainer;
+		let fontSize = "16px";
+
+		if (node.nodeType === Node.TEXT_NODE) {
+			const textNode = node as Text;
+			fontSize = window.getComputedStyle(textNode.parentElement as Element).fontSize;
+			if (range.startOffset < textNode.length) {
+				return { text: textNode.data[range.startOffset], size: fontSize };
+			}
+		} else if (node.nodeType === Node.ELEMENT_NODE) {
+			fontSize = window.getComputedStyle(node as Element).fontSize;
+		}
+
+		// 使用不间断空格保证宽度
+		return { text: "\u00A0", size: fontSize };
+	}
+
+	getSelectionFontSize(selection: Selection | null, i: number): number {
+		let fontSize = 16;
+		let el: Element | null = null;
+
+		if (selection?.focusNode) {
+			if (selection.focusNode.nodeType === Node.TEXT_NODE) {
+				el = selection.focusNode.parentElement;
+			} else if (selection.focusNode instanceof Element) {
+				el = selection.focusNode;
+			}
+		}
+
+		if (!el) {
+			const cmContent = this.editorDom[i]?.querySelector(".cm-content") as HTMLElement | null;
+			el = cmContent;
+		}
+
+		if (el) {
+			const fs = window.getComputedStyle(el).fontSize;
+			const num = parseFloat(fs);
+			if (!isNaN(num)) {
+				fontSize = num;
+			}
+		}
+
+		return fontSize;
+	}
+
+	resolveCursorWidth(rectWidth: number, selection: Selection | null, i: number) {
+		const fontSize = this.getSelectionFontSize(selection, i);
+		const minWidth = 3;
+		const maxWidth = fontSize * 2; // allow double-width glyphs but clamp to avoid full-line width
+
+		if (rectWidth > 0) {
+			return Math.max(minWidth, Math.min(rectWidth, maxWidth));
+		}
+
+		return Math.max(minWidth, fontSize * 0.6);
+	}
+
+	getCollapsedSelectionRect(selection: Selection): DOMRect | null {
+		const focusNode = selection.focusNode;
+		if (!focusNode) return null;
+
+		const range = document.createRange();
+
+		try {
+			const maxOffset = focusNode.nodeType === Node.TEXT_NODE
+				? (focusNode as Text).length
+				: (focusNode.childNodes?.length ?? 0);
+
+			const offset = Math.min(selection.focusOffset, maxOffset);
+			range.setStart(focusNode, offset);
+			range.setEnd(focusNode, offset);
+			const rect = range.getBoundingClientRect();
+			return rect.width || rect.height ? rect : null;
+		} catch (e) {
+			return null;
 		}
 	}
 
 	// 获取当前光标位置的函数
 	getCursorPosition(i: number, isTitle?: boolean) {
 
+		const selection = window.getSelection();
+		if (!selection || selection.rangeCount === 0) {
+			return { x: -1, y: -1, height: 0, width: 0 };
+		}
+
 		let editorDomRect = this.editorDom[i].getBoundingClientRect();
 
 		if (isTitle) {
 			//点击标题，cm 不更新，单独处理
-			let selection = window.getSelection() as Selection;
 			let range = selection.getRangeAt(0);
-			let rect = range.getClientRects()[0];
-			let dir = this.mouseForX.move <= this.mouseForX.down;
+			let rect = this.getCollapsedSelectionRect(selection) || range.getBoundingClientRect();
 
-			return {
-				x: rect.x + (dir ? 0 : rect.width) + window.scrollX - editorDomRect.x,
-				y: rect.y + window.scrollY - editorDomRect.y,
-				height: rect.height,
+			if (rect) {
+				return {
+					x: rect.x + window.scrollX - editorDomRect.x,
+					y: rect.y + window.scrollY - editorDomRect.y,
+					height: rect.height,
+					width: this.resolveCursorWidth(rect.width, selection, i),
+				}
 			}
 		} else {
 			//通过 cm 接口获取光标坐标
@@ -595,13 +673,12 @@ export default class SmoothCursorPlugin extends Plugin {
 			if (cmView && editor) {
 				const cursor = editor.getCursor();
 				const offset = cmView.state.doc.line(cursor.line + 1).from + cursor.ch;
-				let rect = cmView.coordsForChar(offset); // 获取 DOMRect
-				if (!rect) {
-					//判断是否表格
-					let selection = window.getSelection() as Selection;
-					let range = selection.getRangeAt(0);
-					let node = range.commonAncestorContainer;
-					let isTable = false;
+					let rect = cmView.coordsForChar(offset); // 获取 DOMRect
+					if (!rect) {
+						//判断是否表格
+						let range = selection.getRangeAt(0);
+						let node = range.commonAncestorContainer;
+						let isTable = false;
 
 					let tempNode: Node | null = node;
 
@@ -618,28 +695,41 @@ export default class SmoothCursorPlugin extends Plugin {
 						} else {
 							tempNode = tempNode.parentNode;
 						}
-					}
-
-					if (isTable) {
-
-						if ((!this.mouseMoveTaget || this.mouseMoveTaget.down.textContent === this.mouseMoveTaget.move.textContent)
-							&& node.nodeType === Node.TEXT_NODE) {
-							let dir = this.mouseForX.move <= this.mouseForX.down;
-							const tempRange = document.createRange();
-							tempRange.setStart(node, dir ? range.startOffset : range.endOffset);
-							tempRange.setEnd(node, dir ? range.startOffset : range.endOffset);
-							const rect = tempRange.getBoundingClientRect();
-							return {
-								x: rect.x + (dir ? 0 : rect.width) + window.scrollX - editorDomRect.x,
-								y: rect.y + window.scrollY - editorDomRect.y,
-								height: rect.height,
-							}
 						}
 
-					} else {
-						//行尾或者空行需要单独处理
-						const domInfo = cmView.domAtPos(offset);
-						node = domInfo.node;
+						if (isTable) {
+
+							if ((!this.mouseMoveTaget || this.mouseMoveTaget.down.textContent === this.mouseMoveTaget.move.textContent)
+								&& node.nodeType === Node.TEXT_NODE) {
+								let dir = this.mouseForX.move <= this.mouseForX.down;
+								const tempRange = document.createRange();
+								tempRange.setStart(node, dir ? range.startOffset : range.endOffset);
+								tempRange.setEnd(node, dir ? range.startOffset : range.endOffset);
+								const rect = tempRange.getBoundingClientRect();
+								return {
+									x: rect.x + (dir ? 0 : rect.width) + window.scrollX - editorDomRect.x,
+									y: rect.y + window.scrollY - editorDomRect.y,
+									height: rect.height,
+									width: this.resolveCursorWidth(rect.width, selection, i),
+								}
+							}
+
+							const focusRect = this.getCollapsedSelectionRect(selection);
+							if (focusRect) {
+								return {
+									x: focusRect.x + window.scrollX - editorDomRect.x,
+									y: focusRect.y + window.scrollY - editorDomRect.y,
+									height: focusRect.height,
+									width: this.resolveCursorWidth(focusRect.width, selection, i),
+								}
+							}
+
+							if (this.lastPos[i]) return this.lastPos[i];
+
+						} else {
+							//行尾或者空行需要单独处理
+							const domInfo = cmView.domAtPos(offset);
+							node = domInfo.node;
 
 						if (!node.parentElement?.classList.contains("cm-contentContainer")) {
 							if (node.nodeType === Node.ELEMENT_NODE) {
@@ -664,47 +754,54 @@ export default class SmoothCursorPlugin extends Plugin {
 						x: rect.left + window.scrollX - editorDomRect.x,
 						y: rect.top + window.scrollY - editorDomRect.y,
 						height: rect.bottom - rect.top,
+						width: this.resolveCursorWidth(rect.right - rect.left, selection, i),
 					};
 				}
 			}
 		}
 
-		return { x: -1, y: -1, height: 0 };  // 如果没有有效的选择，返回无效位置
+		return { x: -1, y: -1, height: 0, width: 0 };  // 如果没有有效的选择，返回无效位置
 	}
 
-	startObserving(index: number) {
-		// 获取 Obsidian 的 workspace 主体
-		let root = document.querySelector('.cm-contentContainer');
+		startObserving(index: number, retry: number = 0) {
+			// 获取 Obsidian 的 workspace 主体
+			let root = this.editorDom[index]?.querySelector('.cm-contentContainer');
 
-		while (!root) {
-			root = document.querySelector('.cm-contentContainer');
-		}
-
-		this.observer = new MutationObserver((mutations) => {
-			let changed = false;
-
-			for (const mutation of mutations) {
-				if (mutation.type === 'childList') {
-
-					for (let i = 0; i < mutation.addedNodes.length; i++) {
-						if (mutation.addedNodes[i].nodeName != "BR" && !(mutation.addedNodes[i] as HTMLDivElement).classList?.contains("table-cell-wrapper")) {
-							changed = true;
-							break;
-						}
-					}
-
-					for (let i = 0; i < mutation.removedNodes.length; i++) {
-						if (mutation.removedNodes[i].nodeName != "BR" && !(mutation.removedNodes[i] as HTMLDivElement).classList?.contains("table-cell-wrapper")) {
-							changed = true;
-							break;
-						}
-					}
-				}
+			if (!root) {
+				if (retry > 30) return; // 避免无限重试
+				this.delayedFrames(() => this.startObserving(index, retry + 1), 2);
+				return;
 			}
 
-			if (changed) {
-				this.delayedFrames(() => {
-					this.updateCursor(index);
+			const hasContentChange = (mutation: MutationRecord) => {
+				if (mutation.type !== 'childList') return false;
+
+				const isMeaningful = (node: Node) => node.nodeName != "BR" && !(node as HTMLDivElement).classList?.contains("table-cell-wrapper");
+
+				for (let i = 0; i < mutation.addedNodes.length; i++) {
+					if (isMeaningful(mutation.addedNodes[i])) return true;
+				}
+
+				for (let i = 0; i < mutation.removedNodes.length; i++) {
+					if (isMeaningful(mutation.removedNodes[i])) return true;
+				}
+
+				return false;
+			};
+
+			this.observer = new MutationObserver((mutations) => {
+				let changed = false;
+
+				for (const mutation of mutations) {
+					if (hasContentChange(mutation)) {
+						changed = true;
+						break;
+					}
+				}
+
+				if (changed) {
+					this.delayedFrames(() => {
+						this.updateCursor(index);
 				});
 			}
 		});
@@ -775,32 +872,24 @@ export default class SmoothCursorPlugin extends Plugin {
 		requestAnimationFrame(run);
 	}
 
-	ctx: CanvasRenderingContext2D | null = null;
-
-	lastRect = {
-		x: 0,
-		y: 0,
-		width: 0,
-		height: 0
-	}
-
-
 	/** 创建canvas */
 	createTrail(i: number) {
 		// 创建拖尾画布
 		this.canvas[i] = this.editorDom[i].createEl("canvas", { cls: "smooth-cursor-busyo-canvas" });
 		this.canvas[i].id = "trail-canvas-" + i;
 
-		this.ctx = this.canvas[i].getContext("2d");
+		this.ctx[i] = this.canvas[i].getContext("2d");
 
 		const rect = this.editorDom[i].getBoundingClientRect();
 		this.canvas[i].width = rect.width;
 		this.canvas[i].height = rect.height;
+		this.lastRect[i] = { x: 0, y: 0, width: 0, height: 0 };
 	}
 
 	// 绘制拖尾
 	drawTrail(i: number) {
-		if (!this.ctx) return;
+		const ctx = this.ctx[i];
+		if (!ctx) return;
 
 		// console.log("绘制拖尾", this.trailCount[i])
 
@@ -831,19 +920,22 @@ export default class SmoothCursorPlugin extends Plugin {
 
 		let heightDiff = this.rectangle[i].extTarget - this.rectangle[i].extOrigin;
 
-		this.ctx.clearRect(this.lastRect.x, this.lastRect.y, this.lastRect.width, this.lastRect.height);
+		const lastRect = this.lastRect[i];
+		if (lastRect) {
+			ctx.clearRect(lastRect.x, lastRect.y, lastRect.width, lastRect.height);
+		}
 
-		this.ctx.beginPath();
+		ctx.beginPath();
 
-		this.ctx.moveTo(targetX1, this.rectangle[i].y + this.rectangle[i].extTarget);
-		this.ctx.lineTo(targetX2, this.rectangle[i].y);
-		this.ctx.lineTo(originX1, this.rectangle[i].y - this.rectangle[i].dirY * ratio);
-		this.ctx.lineTo(originX2, this.rectangle[i].y - this.rectangle[i].dirY * ratio + this.rectangle[i].extTarget - heightDiff * ratio);
+		ctx.moveTo(targetX1, this.rectangle[i].y + this.rectangle[i].extTarget);
+		ctx.lineTo(targetX2, this.rectangle[i].y);
+		ctx.lineTo(originX1, this.rectangle[i].y - this.rectangle[i].dirY * ratio);
+		ctx.lineTo(originX2, this.rectangle[i].y - this.rectangle[i].dirY * ratio + this.rectangle[i].extTarget - heightDiff * ratio);
 
-		this.ctx.closePath();
+		ctx.closePath();
 
-		(this.ctx as CanvasRenderingContext2D).fillStyle = this.setting.trailColor; // 设置填充颜色
-		this.ctx.fill(); // 填充形状
+		ctx.fillStyle = this.setting.trailColor; // 设置填充颜色
+		ctx.fill(); // 填充形状
 		// ctx.strokeStyle = "black"; // 设置描边颜色
 		// ctx.stroke(); // 描边
 
@@ -862,10 +954,12 @@ export default class SmoothCursorPlugin extends Plugin {
 			this.rectangle[i].y + this.rectangle[i].extTarget,
 			this.rectangle[i].y - this.rectangle[i].dirY * ratio + this.rectangle[i].extTarget - heightDiff * ratio
 		);
-		this.lastRect.x = minX - 50;
-		this.lastRect.y = minY - 50;
-		this.lastRect.width = maxX + 50;
-		this.lastRect.height = maxY + 50;
+		this.lastRect[i] = {
+			x: minX - 50,
+			y: minY - 50,
+			width: (maxX - minX) + 100,
+			height: (maxY - minY) + 100
+		};
 	}
 
 	// 动画循环
@@ -874,12 +968,13 @@ export default class SmoothCursorPlugin extends Plugin {
 			return;
 		}
 
-		if (!this.canvas[i] || !this.rectangle[i] || this.ctx === null) {
+		const ctx = this.ctx[i];
+		if (!this.canvas[i] || !this.rectangle[i] || ctx === null || ctx === undefined) {
 			return;
 		}
 
 		if (this.cursor[i] && this.trailCount[i] != undefined && this.trailCount[i] <= 0) {
-			this.ctx.clearRect(0, 0, this.canvas[i].width, this.canvas[i].height);
+			ctx.clearRect(0, 0, this.canvas[i].width, this.canvas[i].height);
 			this.focus && !this.closeSettings && this.cursor[i].addClass("show");
 			return;
 		}

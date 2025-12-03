@@ -7,7 +7,7 @@ custom styles for smooth-cursor
 .smooth-cursor-busyo {
     position: absolute;
     /* width: 30px; */
-    width: auto;
+    width: calc(var(--cursor-width) * 1px);
     min-width: 3px;
     background-color: var(--cursor-color);
     pointer-events: none;
@@ -22,6 +22,7 @@ custom styles for smooth-cursor
     --cursor-x: 0;
     --cursor-y: 0;
     --cursor-height: 0;
+    --cursor-width: 6;
 }
 
 .theme-dark {
