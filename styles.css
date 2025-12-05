@@ -1,87 +1,59 @@
-/*
+/* ObVide - Neovide-style cursor for Obsidian */
 
-custom styles for smooth-cursor
+/* Base cursor styling - dynamic styles are injected via JavaScript */
 
-*/
-
-.smooth-cursor-busyo {
-    position: absolute;
-    /* width: 30px; */
-    width: calc(var(--cursor-width) * 1px);
-    min-width: 3px;
-    background-color: var(--cursor-color);
-    pointer-events: none;
-    left: calc(var(--cursor-x) * 1px);
-    top: calc(var(--cursor-y) * 1px);
-    height: calc(var(--cursor-height) * 1px);
-    transition: all 0.08s ease-out;
-    display: none;
-    animation: blink calc(var(--cursor-blink-speed) * 1s) infinite;
-
-    --cursor-blink-speed: 1;
-    --cursor-x: 0;
-    --cursor-y: 0;
-    --cursor-height: 0;
-    --cursor-width: 6;
+/* Ensure smooth transitions */
+.obvide-cursor {
+  transition-property: transform;
+  transition-timing-function: cubic-bezier(0.25, 0.1, 0.25, 1);
 }
 
-.theme-dark {
-    --cursor-color: #75a8c7;
+/* Visual mode selection highlight */
+.obvide-visual-selection {
+  position: absolute;
+  pointer-events: none;
+  background-color: rgba(82, 139, 255, 0.3);
+  z-index: 99;
 }
 
-.theme-light {
-    --cursor-color: #75a8c7;
+/* Status bar indicator */
+.obvide-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
 }
 
-.vim-text {
-    position: relative;
-    left: 0;
-    top: 0;
-    pointer-events: none;
-    z-index: 999;
-    line-height: calc(var(--cursor-height) * 1px);
-    font-size: var(--vim-font-size);
-
-    --vim-font-size: 16px;
+.obvide-mode-indicator {
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-weight: 500;
+  text-transform: uppercase;
+  font-size: 10px;
 }
 
-.smooth-cursor-busyo.noTrans {
-    transition: none;
+.obvide-mode-indicator.normal {
+  background-color: rgba(82, 139, 255, 0.2);
+  color: #528bff;
 }
 
-.smooth-cursor-busyo.show {
-    display: block;
+.obvide-mode-indicator.insert {
+  background-color: rgba(152, 195, 121, 0.2);
+  color: #98c379;
 }
 
-.smooth-cursor-busyo.noAni {
-    animation: none;
+.obvide-mode-indicator.visual {
+  background-color: rgba(198, 120, 221, 0.2);
+  color: #c678dd;
 }
 
-.smooth-cursor-busyo-canvas {
-    position: absolute;
-    top: 0;
-    left: 0;
-    pointer-events: none;
-    z-index: 0;
+.obvide-mode-indicator.replace {
+  background-color: rgba(224, 108, 117, 0.2);
+  color: #e06c75;
 }
 
-body.caret-hide {
-    --caret-color: transparent !important;
+.obvide-mode-indicator.command {
+  background-color: rgba(209, 154, 102, 0.2);
+  color: #d19a66;
 }
 
-.cm-vimCursorLayer {
-    display: none;
-}
-
-/* 定义 @keyframes 动画 */
-@keyframes blink {
-
-    0%,
-    100% {
-        opacity: 0.05;
-    }
-
-    50% {
-        opacity: 1;
-    }
-}

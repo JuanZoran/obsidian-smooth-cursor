@@ -1,91 +1,34 @@
-import { EditorView, ViewPlugin, ViewUpdate } from '@codemirror/view';
-import type SmoothCursorPlugin from './main';
+import { EditorView } from '@codemirror/view';
+import type ObVidePlugin from './main';
 import type { AnimationEngine } from './animation';
 import type { CursorPosition, CursorShape, VimMode } from './types';
-import { calculateCursorDimensions } from './cursor-utils';
-import { CoordinateService } from './services/coordinate-service';
-import { CharacterMeasurementService } from './services/character-measurement-service';
-import { DOMChangeDetectorService } from './services/dom-change-detector-service';
-import { CursorElementManager } from './core/cursor-element-manager';
-import { EditorStateManager } from './core/editor-state-manager';
-import { EventManager } from './core/event-manager';
-import { NativeCursorHider } from './core/native-cursor-hider';
-import { getDefaultLineHeight } from './utils/editor-utils';
-import { isElementConnected } from './utils/dom-utils';
-import { hasOriginalDispatch } from './utils/type-guards';
-
-/**
- * Create a ViewPlugin that listens for cursor position changes
- * This provides immediate detection of cursor movement during typing
- */
-function createCursorUpdatePlugin(onUpdate: (update: ViewUpdate) => void) {
-  return ViewPlugin.fromClass(class {
-    update(update: ViewUpdate) {
-      // Trigger callback when document changes or selection changes
-      if (update.docChanged || update.selectionSet || update.viewportChanged) {
-        onUpdate(update);
-      }
-    }
-  });
-}
 
 /**
  * CursorRenderer - Manages custom cursor rendering in CodeMirror editors
- * Optimized for performance with caching and throttled updates
  */
 export class CursorRenderer {
-  private plugin: SmoothCursorPlugin;
+  private plugin: ObVidePlugin;
   private animationEngine: AnimationEngine;
   private editorView: EditorView | null = null;
+  private cursorEl: HTMLDivElement | null = null;
+  private containerEl: HTMLDivElement | null = null;
   private isAttached = false;
   private updateScheduled = false;
   private lastCursorPos = -1;
   private modeUnsubscribe: (() => void) | null = null;
-  private isDestroyed = false;
+  private rafId: number | null = null;
+  private refreshIntervalId: number | null = null;
+  private lastSuccessfulCoords: { left: number; top: number } | null = null;
+  private scrollHandler: (() => void) | null = null;
   private isScrolling = false;
   private scrollTimeout: number | null = null;
-  private lastScrollUpdateTime = 0;
-  private scrollThrottleInterval = 16; // ~60fps during scroll
-  
-  // Services and managers
-  private coordinateService: CoordinateService;
-  private characterMeasurementService: CharacterMeasurementService;
-  private domChangeDetector: DOMChangeDetectorService;
-  private cursorElementManager: CursorElementManager;
-  private editorStateManager: EditorStateManager;
-  private eventManager: EventManager;
-  private nativeCursorHider: NativeCursorHider;
-  
-  // Transaction-based cursor tracking
-  private cursorUpdatePlugin: ReturnType<typeof createCursorUpdatePlugin> | null = null;
-  private lastDocChangeTime = 0;
-  private isTyping = false;
-  private typingTimeout: number | null = null;
-  private lastUpdateWasTyping = false;
-  
-  // Movement debounce for breathing animation
-  private movementResumeTimeout: number | null = null;
-  private movementDebounceDelay = 300; // Delay before resuming animation after movement stops (ms)
-  private isCurrentlyMoving = false; // Track if cursor is currently moving
 
-  constructor(plugin: SmoothCursorPlugin, animationEngine: AnimationEngine) {
+  constructor(plugin: ObVidePlugin, animationEngine: AnimationEngine) {
     this.plugin = plugin;
     this.animationEngine = animationEngine;
     
-    // Initialize services and managers
-    this.coordinateService = new CoordinateService();
-    this.characterMeasurementService = new CharacterMeasurementService();
-    this.domChangeDetector = new DOMChangeDetectorService();
-    this.cursorElementManager = new CursorElementManager(plugin.settings);
-    this.editorStateManager = new EditorStateManager();
-    this.eventManager = new EventManager();
-    this.nativeCursorHider = new NativeCursorHider();
-    
     // Set up animation frame callback
     this.animationEngine.setOnFrame((pos) => this.applyCursorPosition(pos));
-    
-    // Set up movement callback for blink pause
-    this.animationEngine.setOnMovement((isMoving) => this.handleMovementState(isMoving));
     
     // Listen for vim mode changes
     this.modeUnsubscribe = this.plugin.vimState?.onModeChange((mode) => {
@@ -97,324 +40,41 @@ export class CursorRenderer {
    * Attach cursor renderer to an EditorView
    */
   attach(editorView: EditorView) {
-    const cursorEl = this.cursorElementManager.getElement();
-    if (this.editorView === editorView && this.isAttached && cursorEl && isElementConnected(cursorEl)) {
+    if (this.editorView === editorView && this.isAttached && this.cursorEl?.isConnected) {
+      // Already attached to this editor and cursor exists
       return;
     }
 
     this.detach();
     this.editorView = editorView;
     
-    // Attach services and managers
-    this.coordinateService.attach(editorView);
-    this.characterMeasurementService.attach(editorView);
-    this.editorStateManager.attach(editorView);
-    this.nativeCursorHider.attach(editorView);
-    
     // Create cursor elements
-    const editorId = CursorElementManager.generateEditorId();
-    this.cursorElementManager.create(editorId);
+    this.createCursorElements();
     
-    // Setup transaction listener for immediate cursor tracking during typing
-    this.setupTransactionListener();
+    // Add active class to editor (for hiding native cursor)
+    editorView.dom.classList.add('obvide-active');
+    
+    // Setup cursor position tracking
+    this.setupCursorTracking();
     
     // Setup scroll event listener for immediate position updates during scroll
     this.setupScrollListener();
     
-    // Setup focus event listener for immediate response to focus changes
-    this.setupFocusListener();
-    
-    // Setup mouse and keyboard event listeners for cursor position changes
-    this.setupMouseKeyboardListeners();
-    
-    // Setup DOM change detector for Live Preview mode compatibility
-    this.setupDOMChangeDetector();
-    
     this.isAttached = true;
+    this.plugin.debug('CursorRenderer attached, cursor element:', !!this.cursorEl);
     
-    // smooth-cursor-active class is already added by editorStateManager.attach()
-    // which ensures native cursor is always hidden while editor is attached
-    // This prevents native cursor flash when focus switches between editor and non-editor areas
-    
-    // Perform initial health check
-    this.editorStateManager.ensureHealth(true);
-    
-    // Initialize cursor shape and breathing animation
-    this.updateCursorShape(this.plugin.getVimMode());
-    
-    this.plugin.debug('CursorRenderer attached');
-    
-    // Initial cursor position update - use immediate update to prevent native cursor flash
-    if (this.editorView) {
-      this.updatePositionImmediate();
-      // Also schedule a normal update for smooth animation after immediate positioning
-      this.scheduleUpdate();
-    }
+    // Initial cursor position update
+    this.scheduleUpdate();
   }
 
   /**
-   * Setup CodeMirror transaction listener by intercepting EditorView.dispatch
-   * This is a workaround since we can't add ViewPlugin to extensions in Obsidian
-   * WARNING: This approach may conflict with other plugins that also intercept dispatch
-   */
-  private setupTransactionListener() {
-    if (!this.editorView) return;
-
-    // Intercept EditorView.dispatch to listen to all transactions
-    // Store original dispatch for cleanup
-    // WARNING: Using internal property __originalDispatch which may conflict with other plugins
-    if (!hasOriginalDispatch(this.editorView)) {
-      this.editorView.__originalDispatch = this.editorView.dispatch.bind(this.editorView);
-    }
-    
-    // At this point, __originalDispatch must be defined
-    if (!hasOriginalDispatch(this.editorView)) {
-      this.plugin.debug('Failed to store original dispatch');
-      return;
-    }
-    
-    const originalDispatch = this.editorView.__originalDispatch;
-    const self = this;
-    
-    this.editorView.dispatch = function(tr: any) {
-      // Call original dispatch first
-      const result = originalDispatch(tr);
-      
-      // Then check for cursor position changes (use requestAnimationFrame to avoid blocking)
-      if (self.isAttached && self.editorView) {
-        requestAnimationFrame(() => {
-          if (self.isAttached && self.editorView) {
-            self.handleEditorUpdate(tr);
-          }
-        });
-      }
-      
-      return result;
-    };
-
-    // Also try to use ViewPlugin if possible (may not work without being in extensions)
-    this.cursorUpdatePlugin = createCursorUpdatePlugin((update: ViewUpdate) => {
-      if (!this.isAttached || !this.editorView) return;
-      this.handleEditorUpdateFromView(update);
-    });
-
-    this.plugin.debug('Transaction listener created (dispatch interception)');
-  }
-
-  /**
-   * Unified handler for editor updates from different sources
-   * @param docChanged - Whether the document changed (typing)
-   * @param cursorPos - Current cursor position
-   */
-  private handleEditorUpdateInternal(docChanged: boolean, cursorPos: number) {
-    if (!this.editorView) return;
-    
-    const now = performance.now();
-    
-    // Track if this is a typing action (document changed)
-    if (docChanged) {
-      this.lastDocChangeTime = now;
-      this.isTyping = true;
-      this.lastUpdateWasTyping = true;
-      
-      // Clear existing typing timeout
-      if (this.typingTimeout !== null) {
-        clearTimeout(this.typingTimeout);
-      }
-      
-      // Set timeout to mark end of typing
-      this.typingTimeout = window.setTimeout(() => {
-        this.isTyping = false;
-      }, 150);
-    } else {
-      this.lastUpdateWasTyping = false;
-    }
-    
-    // Check if cursor position changed
-    if (cursorPos !== this.lastCursorPos) {
-      this.lastCursorPos = cursorPos;
-      
-      // Clear coordinate cache on position change
-      this.coordinateService.clearCache();
-      
-      // Update cursor immediately with typing context
-      this.updateCursorPositionWithContext(this.lastUpdateWasTyping);
-    }
-  }
-
-  /**
-   * Handle editor update from intercepted dispatch
-   */
-  private handleEditorUpdate(tr: any) {
-    if (!this.editorView) return;
-    
-    const state = this.editorView.state;
-    const docChanged = tr.docChanged || false;
-    const sel = state.selection.main;
-    const cursorPos = sel.head;
-    
-    this.handleEditorUpdateInternal(docChanged, cursorPos);
-  }
-
-  /**
-   * Handle editor update from ViewPlugin (if it works)
-   */
-  private handleEditorUpdateFromView(update: ViewUpdate) {
-    if (!this.isAttached || !this.editorView) return;
-    
-    const docChanged = update.docChanged;
-    const sel = update.state.selection.main;
-    const cursorPos = sel.head;
-    
-    this.handleEditorUpdateInternal(docChanged, cursorPos);
-  }
-
-  /**
-   * Clear all caches (coordinates and character measurements)
-   */
-  private clearAllCaches(): void {
-    this.coordinateService.clearCache();
-    this.characterMeasurementService.clearCache();
-  }
-
-  /**
-   * Check if editor is focused, hide cursor if not
-   * @returns true if focused, false otherwise
-   */
-  private checkFocusAndHideIfNeeded(): boolean {
-    if (!this.editorStateManager.isFocused()) {
-      this.cursorElementManager.hide();
-      return false;
-    }
-    return true;
-  }
-
-  /**
-   * Calculate cursor position from current editor state
-   * @returns CursorPosition or null if invalid
-   */
-  private calculateCursorPosition(): CursorPosition | null {
-    if (!this.editorView) return null;
-
-    const sel = this.editorView.state.selection.main;
-    const pos = sel.head;
-    const coords = this.coordinateService.getCursorCoordsCached(pos);
-    
-    if (!coords || isNaN(coords.left) || isNaN(coords.top) || !isFinite(coords.left) || !isFinite(coords.top)) {
-      return null;
-    }
-
-    const charWidth = this.characterMeasurementService.measureCharacterWidthCached(pos);
-    const lineHeight = getDefaultLineHeight(this.editorView);
-    
-    return {
-      x: coords.left,
-      y: coords.top,
-      width: charWidth,
-      height: lineHeight,
-    };
-  }
-
-  /**
-   * Calculate target cursor position with shape-adjusted dimensions
-   * @param basePosition - Base cursor position
-   * @param shape - Cursor shape
-   * @returns Target position with adjusted dimensions
-   */
-  private calculateTargetPosition(basePosition: CursorPosition, shape: CursorShape): CursorPosition {
-    const { width: targetWidth, height: targetHeight } = calculateCursorDimensions(basePosition, shape);
-    
-    return {
-      x: basePosition.x,
-      y: basePosition.y,
-      width: targetWidth,
-      height: targetHeight,
-    };
-  }
-
-  /**
-   * Handle cursor position change (clear cache and schedule update)
-   * @param cursorPos - New cursor position
-   */
-  private handleCursorPositionChange(cursorPos: number): void {
-    if (cursorPos !== this.lastCursorPos) {
-      this.lastCursorPos = cursorPos;
-      this.clearAllCaches();
-      this.scheduleUpdate();
-    }
-  }
-
-  /**
-   * Update cursor position with typing context for animation optimization
-   * Ensures smooth dimension transitions when cursor shape changes
-   */
-  private updateCursorPositionWithContext(isTyping: boolean) {
-    const cursorEl = this.cursorElementManager.getElement();
-    if (!this.editorView || !cursorEl || !isElementConnected(cursorEl)) {
-      if (!isElementConnected(cursorEl)) {
-        this.editorStateManager.ensureHealth(true);
-      }
-      return;
-    }
-
-    // Check if editor is focused - if not, hide cursor and return
-    if (!this.checkFocusAndHideIfNeeded()) {
-      return;
-    }
-
-    const basePosition = this.calculateCursorPosition();
-    if (!basePosition) {
-      this.cursorElementManager.hide();
-      return;
-    }
-
-    try {
-      this.cursorElementManager.show();
-      
-      // Get current shape to calculate target dimensions
-      const shape = (cursorEl.dataset.shape || 'block') as CursorShape;
-      const targetPosition = this.calculateTargetPosition(basePosition, shape);
-      
-      if (this.isScrolling) {
-        // Use immediate positioning during scroll
-        const yOffset = shape === 'underline' ? basePosition.height - targetPosition.height : 0;
-        this.cursorElementManager.updatePosition(
-          targetPosition.x,
-          targetPosition.y,
-          targetPosition.width,
-          targetPosition.height,
-          this.plugin.settings.useTransformAnimation,
-          yOffset
-        );
-        this.animationEngine.setImmediate(targetPosition);
-      } else {
-        const currentLeft = parseFloat(cursorEl.style.left || '0');
-        const currentTop = parseFloat(cursorEl.style.top || '0');
-        const wasHidden = (currentLeft <= -1000 || currentTop <= -1000) || 
-                         cursorEl.style.display === 'none';
-        
-        if (wasHidden) {
-          this.animationEngine.setImmediate(targetPosition);
-          this.applyCursorPosition(targetPosition);
-        } else {
-          // Pass typing context to animation engine for adaptive lerp
-          // Animation engine will smoothly interpolate dimensions
-          this.animationEngine.animateTo(targetPosition, isTyping);
-        }
-      }
-      
-    } catch (e) {
-      this.cursorElementManager.hide();
-    }
-  }
-
-  /**
-   * Setup scroll event listener with throttling
+   * Setup scroll event listener
    */
   private setupScrollListener() {
     if (!this.editorView) return;
     
-    const scrollHandler = () => {
+    this.scrollHandler = () => {
+      // Mark as scrolling
       this.isScrolling = true;
       
       // Clear previous timeout
@@ -422,246 +82,78 @@ export class CursorRenderer {
         clearTimeout(this.scrollTimeout);
       }
       
-      // Throttle scroll updates
-      const now = performance.now();
-      if (now - this.lastScrollUpdateTime >= this.scrollThrottleInterval) {
-        this.lastScrollUpdateTime = now;
-        if (this.checkFocusAndHideIfNeeded()) {
-          this.updatePositionImmediate();
-        }
+      // During scroll, update position immediately without animation
+      // Only if editor is focused
+      if (this.isEditorFocused()) {
+        this.updatePositionImmediate();
       }
       
       // Set timeout to mark end of scroll
       this.scrollTimeout = window.setTimeout(() => {
         this.isScrolling = false;
-        if (this.checkFocusAndHideIfNeeded()) {
+        // Final position update after scroll ends
+        if (this.isEditorFocused()) {
           this.scheduleUpdate();
         }
       }, 150);
     };
     
-    this.eventManager.addEventListener(
-      this.editorView.scrollDOM,
-      'scroll',
-      scrollHandler,
-      { passive: true }
-    );
-  }
-
-  /**
-   * Setup mouse and keyboard event listeners to catch cursor movements
-   * that might not trigger transactions (e.g., mouse clicks, arrow keys)
-   */
-  private setupMouseKeyboardListeners() {
-    if (!this.editorView) return;
-
-    // Listen for mouse clicks in the editor
-    const clickHandler = (e: MouseEvent) => {
-      if (!this.editorView || !this.isAttached) return;
-      
-      const target = e.target as HTMLElement;
-      if (target.closest('.cm-editor')) {
-        // Small delay to allow selection to update
-        requestAnimationFrame(() => {
-          if (this.editorView && this.isAttached) {
-            const sel = this.editorView.state.selection.main;
-            const cursorPos = sel.head;
-            
-            this.handleCursorPositionChange(cursorPos);
-          }
-        });
-      }
-    };
-
-    // Listen for keyboard navigation (arrow keys, home, end, etc.)
-    const keydownHandler = (e: KeyboardEvent) => {
-      if (!this.editorView || !this.isAttached) return;
-      
-      const target = e.target as HTMLElement;
-      if (!target.closest('.cm-editor')) return;
-
-      // Check for navigation keys
-      const navigationKeys = [
-        'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
-        'Home', 'End', 'PageUp', 'PageDown'
-      ];
-      
-      if (navigationKeys.includes(e.key) || 
-          (e.key === 'Home' || e.key === 'End') ||
-          (e.ctrlKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight'))) {
-        // Small delay to allow selection to update
-        requestAnimationFrame(() => {
-          if (this.editorView && this.isAttached) {
-            const sel = this.editorView.state.selection.main;
-            const cursorPos = sel.head;
-            
-            this.handleCursorPositionChange(cursorPos);
-          }
-        });
-      }
-    };
-
-    this.eventManager.addEventListener(this.editorView.dom, 'click', clickHandler);
-    this.eventManager.addEventListener(this.editorView.dom, 'keydown', keydownHandler, true);
-  }
-
-  /**
-   * Setup DOM change detector for Live Preview mode compatibility
-   * Detects when Obsidian switches line display mode (rendered -> source) and updates cursor position
-   */
-  private setupDOMChangeDetector() {
-    if (!this.editorView) return;
-
-    // Set up callback to handle DOM structure changes
-    this.domChangeDetector.attach(this.editorView, () => {
-      if (!this.isAttached || !this.editorView) return;
-
-      // Check focus state first - if editor is not focused, hide cursor
-      if (!this.checkFocusAndHideIfNeeded()) {
-        this.plugin.debug('DOM structure change detected but editor not focused, hiding cursor');
-        return;
-      }
-
-      this.plugin.debug('DOM structure change detected, clearing cache and updating cursor');
-
-      // Clear all caches to force recalculation with new DOM structure
-      this.clearAllCaches();
-      
-      // Reset last cursor position to force position update
-      this.lastCursorPos = -1;
-      
-      // Immediately update cursor position to reflect new DOM structure
-      // Use immediate update since DOM has already changed
-      this.updatePositionImmediate();
-    });
-  }
-
-  /**
-   * Setup focus event listener for immediate response to focus changes
-   * This prevents native cursor flash when focus returns to editor
-   */
-  private setupFocusListener() {
-    if (!this.editorView) return;
-
-    const focusHandler = (e: FocusEvent) => {
-      const target = e.target as HTMLElement;
-      if (!target || !this.editorView) return;
-
-      // Check if focus is entering the editor
-      const editorDom = this.editorView.dom;
-      if (editorDom.contains(target) || editorDom === target) {
-        // Ensure smooth-cursor-active class is present (should already be there from attach)
-        // Force immediate application to prevent any native cursor flash
-        this.editorStateManager.setEditorActiveClass(true);
-        
-        // Perform health check on focus
-        this.editorStateManager.ensureHealth(true);
-        
-        // Force hide native cursors immediately (direct DOM manipulation)
-        this.nativeCursorHider.forceHide();
-        
-        // Immediately update cursor position synchronously to prevent native cursor flash
-        // Use immediate update instead of scheduleUpdate to avoid requestAnimationFrame delay
-        this.updatePositionImmediate();
-        
-        // Also schedule a normal update for smooth animation after immediate positioning
-        this.scheduleUpdate();
-        
-        this.plugin.debug('Focus returned to editor, cursor updated immediately');
-      }
-    };
-
-    const blurHandler = (e: FocusEvent) => {
-      const target = e.target as HTMLElement;
-      if (!target || !this.editorView) return;
-
-      // Check if focus is leaving the editor
-      const editorDom = this.editorView.dom;
-      if (editorDom.contains(target) || editorDom === target) {
-        // Small delay (10ms) to check if focus moved to another part of editor
-        // This is necessary because focus events are asynchronous - the focusout event
-        // fires before the new focus target is actually focused. The delay allows
-        // us to check the actual focus state after the browser has updated it.
-        // Note: We keep smooth-cursor-active class even when blurred to prevent
-        // native cursor flash when focus returns quickly
-        setTimeout(() => {
-          if (this.editorView) {
-            const isStillFocused = this.editorStateManager.isFocused(true);
-            
-            if (!isStillFocused) {
-              // Hide custom cursor but keep smooth-cursor-active class
-              // This ensures native cursor stays hidden when focus returns
-              this.cursorElementManager.hide();
-              this.plugin.debug('Editor lost focus, cursor hidden');
-            }
-          }
-        }, 10);
-      }
-    };
-
-    // Also listen to mousedown to add class before focus event
-    // This prevents native cursor flash when clicking to focus editor
-    const mousedownHandler = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      if (!target || !this.editorView) return;
-
-      const editorDom = this.editorView.dom;
-      if (editorDom.contains(target) || editorDom === target) {
-        // Add class immediately on mousedown, before focus event
-        // This ensures native cursor is hidden before browser renders focus state
-        this.editorStateManager.setEditorActiveClass(true);
-        
-        // Perform health check on mousedown
-        this.editorStateManager.ensureHealth(true);
-      }
-    };
-
-    // Use capture phase to catch events early
-    this.eventManager.addEventListener(document, 'mousedown', mousedownHandler, true);
-    this.eventManager.addEventListener(document, 'focusin', focusHandler, true);
-    this.eventManager.addEventListener(document, 'focusout', blurHandler, true);
+    this.editorView.scrollDOM.addEventListener('scroll', this.scrollHandler, { passive: true });
   }
 
   /**
    * Update cursor position immediately (no animation) - used during scroll
    */
   private updatePositionImmediate() {
-    if (!this.editorView) return;
-
-    // Check if editor is focused - if not, hide cursor and return
-    if (!this.checkFocusAndHideIfNeeded()) {
+    if (!this.editorView || !this.cursorEl) return;
+    
+    // Don't update if editor not focused
+    if (!this.isEditorFocused()) {
+      this.hideCursor();
       return;
     }
 
-    const cursorEl = this.cursorElementManager.getElement();
-    if (!cursorEl) return;
-
-    const basePosition = this.calculateCursorPosition();
-    if (!basePosition) {
-      this.cursorElementManager.hide();
-      return;
-    }
+    const sel = this.editorView.state.selection.main;
+    const pos = sel.head;
 
     try {
-      this.cursorElementManager.show();
+      const coords = this.getCursorCoords(pos);
+      if (!coords) {
+        this.hideCursor();
+        return;
+      }
+
+      const charWidth = this.measureCharacterWidth(pos);
+      const lineHeight = this.editorView.defaultLineHeight;
+
+      // Check bounds - cursor must be within visible scroll area
+      const scrollRect = this.editorView.scrollDOM.getBoundingClientRect();
       
-      const shape = (cursorEl.dataset.shape || 'block') as CursorShape;
-      const targetPosition = this.calculateTargetPosition(basePosition, shape);
-      const lineHeight = getDefaultLineHeight(this.editorView);
-      const yOffset = shape === 'underline' ? lineHeight - targetPosition.height : 0;
+      // If coords are outside visible area, hide cursor completely
+      if (coords.top < scrollRect.top || 
+          coords.top > scrollRect.bottom - lineHeight ||
+          coords.left < scrollRect.left ||
+          coords.left > scrollRect.right - charWidth) {
+        this.hideCursor();
+        return;
+      }
+
+      // Position is valid - show and update
+      this.cursorEl.style.left = `${coords.left}px`;
+      this.cursorEl.style.top = `${coords.top}px`;
+      this.cursorEl.style.width = `${charWidth}px`;
+      this.cursorEl.style.height = `${lineHeight}px`;
+      this.showCursor();
       
-      this.cursorElementManager.updatePosition(
-        targetPosition.x,
-        targetPosition.y,
-        targetPosition.width,
-        targetPosition.height,
-        this.plugin.settings.useTransformAnimation,
-        yOffset
-      );
-      
-      this.animationEngine.setImmediate(targetPosition);
-    } catch (e) {
-      this.cursorElementManager.hide();
+      // Sync animation engine
+      this.animationEngine.setImmediate({
+        x: coords.left,
+        y: coords.top,
+        width: charWidth,
+        height: lineHeight,
+      });
+    } catch {
+      this.hideCursor();
     }
   }
 
@@ -669,72 +161,68 @@ export class CursorRenderer {
    * Detach from current editor
    */
   detach() {
-    // Restore original dispatch if we intercepted it
-    if (this.editorView && hasOriginalDispatch(this.editorView)) {
-      this.editorView.dispatch = this.editorView.__originalDispatch;
-      // Use type assertion for delete since we know it exists
-      delete (this.editorView as { __originalDispatch?: (tr: any) => void }).__originalDispatch;
+    // Remove scroll listener
+    if (this.editorView && this.scrollHandler) {
+      this.editorView.scrollDOM.removeEventListener('scroll', this.scrollHandler);
+      this.scrollHandler = null;
     }
     
-    // Remove all event listeners
-    this.eventManager.removeAll();
+    if (this.editorView) {
+      this.editorView.dom.classList.remove('obvide-active');
+    }
     
-    // Clear timeouts
+    // Clean up RAF and intervals
+    if (this.rafId !== null) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = null;
+    }
+    if (this.refreshIntervalId !== null) {
+      clearInterval(this.refreshIntervalId);
+      this.refreshIntervalId = null;
+    }
     if (this.scrollTimeout !== null) {
       clearTimeout(this.scrollTimeout);
       this.scrollTimeout = null;
     }
-    if (this.typingTimeout !== null) {
-      clearTimeout(this.typingTimeout);
-      this.typingTimeout = null;
-    }
-    if (this.movementResumeTimeout !== null) {
-      clearTimeout(this.movementResumeTimeout);
-      this.movementResumeTimeout = null;
-    }
     
-    // Remove moving class to ensure clean state
-    const cursorEl = this.cursorElementManager.getElement();
-    if (cursorEl) {
-      cursorEl.classList.remove('moving');
-    }
-    this.isCurrentlyMoving = false;
-    
-    this.cursorElementManager.hide();
-    
-    // Detach services and managers
-    this.coordinateService.detach();
-    this.characterMeasurementService.detach();
-    this.domChangeDetector.detach();
-    this.editorStateManager.detach();
-    this.nativeCursorHider.detach();
+    // Hide cursor instead of removing it (faster re-attach)
+    this.hideCursor();
     
     this.editorView = null;
     this.isAttached = false;
     this.lastCursorPos = -1;
+    this.lastSuccessfulCoords = null;
     this.isScrolling = false;
-    this.isTyping = false;
-    this.lastUpdateWasTyping = false;
-    this.cursorUpdatePlugin = null;
+  }
+
+  /**
+   * Hide the cursor element
+   */
+  private hideCursor() {
+    if (this.cursorEl) {
+      this.cursorEl.style.display = 'none';
+      // Move cursor off-screen to prevent any flash when showing again
+      this.cursorEl.style.left = '-9999px';
+      this.cursorEl.style.top = '-9999px';
+    }
+  }
+
+  /**
+   * Show the cursor element (position must be set before calling this)
+   */
+  private showCursor() {
+    if (this.cursorEl) {
+      this.cursorEl.style.display = 'block';
+    }
   }
 
   /**
    * Clean up all resources
    */
   destroy() {
-    this.isDestroyed = true;
     this.modeUnsubscribe?.();
     this.modeUnsubscribe = null;
-    if (this.typingTimeout !== null) {
-      clearTimeout(this.typingTimeout);
-      this.typingTimeout = null;
-    }
-    if (this.movementResumeTimeout !== null) {
-      clearTimeout(this.movementResumeTimeout);
-      this.movementResumeTimeout = null;
-    }
     this.detach();
-    this.cursorElementManager.remove();
   }
 
   /**
@@ -742,167 +230,588 @@ export class CursorRenderer {
    */
   forceUpdate() {
     this.lastCursorPos = -1;
-    this.clearAllCaches(); // Clear cache on force update
-    // Also update shape/animation to apply any setting changes
-    const cursorEl = this.cursorElementManager.getElement();
-    if (cursorEl && this.editorView) {
-      this.updateCursorShape(this.plugin.getVimMode());
-    }
     this.scheduleUpdate();
   }
 
+  private createCursorElements() {
+    if (!this.editorView) return;
+
+    // Remove any existing cursor element first
+    if (this.cursorEl) {
+      this.cursorEl.remove();
+      this.cursorEl = null;
+    }
+
+    // Also remove any orphaned cursor elements in body
+    document.querySelectorAll('.obvide-cursor').forEach(el => el.remove());
+
+    // Create cursor element directly - no container needed
+    // Attach to document.body with fixed positioning for simplest calculation
+    this.cursorEl = document.createElement('div');
+    this.cursorEl.className = 'obvide-cursor';
+    this.cursorEl.dataset.editorId = this.getEditorId();
+    this.cursorEl.style.cssText = `
+      position: fixed !important;
+      display: block !important;
+      pointer-events: none !important;
+      z-index: 10000 !important;
+      background-color: ${this.plugin.settings.cursorColor} !important;
+      opacity: ${this.plugin.settings.cursorOpacity} !important;
+      border-radius: 1px;
+    `;
+    
+    // Set initial shape based on current mode
+    this.updateCursorShape(this.plugin.getVimMode());
+    
+    // Append directly to body - completely outside editor DOM
+    document.body.appendChild(this.cursorEl);
+    
+    // Mark editor as active (for hiding native cursor)
+    this.editorView.dom.classList.add('obvide-active');
+    
+    this.plugin.debug('Cursor element created and appended to body');
+  }
+
+  /**
+   * Get a unique identifier for the current editor
+   */
+  private getEditorId(): string {
+    return `obvide-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  private removeCursorElements() {
+    this.cursorEl?.remove();
+    this.cursorEl = null;
+    this.containerEl?.remove();
+    this.containerEl = null;
+  }
+
+  private setupCursorTracking() {
+    if (!this.editorView) return;
+
+    // Watch for selection changes using EditorView's update mechanism
+    // We'll poll for changes since we can't easily add an extension
+    const pollCursor = () => {
+      if (!this.isAttached || !this.editorView) {
+        this.plugin.debug('Poll stopped: isAttached=', this.isAttached, 'editorView=', !!this.editorView);
+        this.rafId = null;
+        return;
+      }
+      
+      // Check if editor has focus - hide cursor if not focused
+      if (!this.isEditorFocused()) {
+        this.hideCursor();
+        this.rafId = requestAnimationFrame(pollCursor);
+        return;
+      }
+      
+      // Ensure editor has active class (to hide native cursor)
+      if (!this.editorView.dom.classList.contains('obvide-active')) {
+        this.editorView.dom.classList.add('obvide-active');
+      }
+      
+      // Check if cursor element still exists in DOM
+      if (!this.cursorEl || !this.cursorEl.isConnected) {
+        this.plugin.debug('Cursor element missing or disconnected, recreating...');
+        this.createCursorElements();
+      }
+      
+      const sel = this.editorView.state.selection.main;
+      const cursorPos = sel.head;
+      
+      // Always update if lastCursorPos is -1 (forced update) or position changed
+      if (this.lastCursorPos === -1 || cursorPos !== this.lastCursorPos) {
+        this.lastCursorPos = cursorPos;
+        this.scheduleUpdate();
+      }
+      
+      this.rafId = requestAnimationFrame(pollCursor);
+    };
+    
+    this.rafId = requestAnimationFrame(pollCursor);
+    
+    // Also set up a periodic refresh to catch any edge cases
+    // This runs less frequently to avoid interference with scroll
+    this.refreshIntervalId = window.setInterval(() => {
+      if (this.isAttached && this.editorView) {
+        // Skip during scrolling - scroll handler takes care of updates
+        if (this.isScrolling) {
+          return;
+        }
+        
+        // Only process if editor is focused
+        if (!this.isEditorFocused()) {
+          this.hideCursor();
+          return;
+        }
+        
+        // Ensure editor has active class (to hide native cursor)
+        if (!this.editorView.dom.classList.contains('obvide-active')) {
+          this.editorView.dom.classList.add('obvide-active');
+        }
+        
+        // Check cursor element health and recreate if needed
+        if (!this.cursorEl || !this.cursorEl.isConnected) {
+          this.plugin.debug('Interval check: cursor element missing, recreating...');
+          this.createCursorElements();
+        }
+        
+        // Force a position recalculation
+        this.scheduleUpdate();
+      }
+    }, 300);
+  }
+
+  /**
+   * Check if the editor has focus
+   */
+  private isEditorFocused(): boolean {
+    if (!this.editorView) return false;
+    
+    // Check if the editor DOM or any of its children has focus
+    const editorDom = this.editorView.dom;
+    const activeElement = document.activeElement;
+    
+    if (!activeElement) return false;
+    
+    // Check if active element is within the editor
+    return editorDom.contains(activeElement) || editorDom === activeElement;
+  }
+
+  /**
+   * Recreate cursor element if it was removed from DOM
+   */
+  private recreateCursorElement() {
+    if (!this.editorView) return;
+    
+    // Remove old elements if they exist
+    this.removeCursorElements();
+    
+    // Recreate
+    this.createCursorElements();
+    this.plugin.debug('Cursor element recreated');
+  }
+
+  /**
+   * Ensure cursor element exists and editor has active class
+   * Does NOT force cursor visible - that's handled by position update
+   */
+  private ensureCursorHealth() {
+    if (!this.cursorEl || !this.cursorEl.isConnected) {
+      this.recreateCursorElement();
+      return;
+    }
+    
+    // Ensure editor has active class (to hide native cursor)
+    if (this.editorView && !this.editorView.dom.classList.contains('obvide-active')) {
+      this.editorView.dom.classList.add('obvide-active');
+    }
+  }
 
   private scheduleUpdate() {
-    if (this.updateScheduled || this.isDestroyed) return;
+    if (this.updateScheduled) return;
     this.updateScheduled = true;
     
     requestAnimationFrame(() => {
       this.updateScheduled = false;
-      if (!this.isDestroyed) {
-        this.updateCursorPosition();
-      }
+      this.updateCursorPosition();
     });
   }
 
   private updateCursorPosition() {
-    // Delegate to context-aware method with current typing state
-    this.updateCursorPositionWithContext(this.isTyping);
+    // Detailed logging for debugging
+    if (!this.editorView) {
+      this.plugin.debug('updateCursorPosition: no editorView');
+      return;
+    }
+    if (!this.cursorEl) {
+      this.plugin.debug('updateCursorPosition: no cursorEl');
+      return;
+    }
+    if (!this.cursorEl.isConnected) {
+      this.plugin.debug('updateCursorPosition: cursorEl not connected to DOM');
+      this.recreateCursorElement();
+      return;
+    }
+
+    // Ensure editor has active class (to hide native cursor)
+    if (!this.editorView.dom.classList.contains('obvide-active')) {
+      this.editorView.dom.classList.add('obvide-active');
+    }
+
+    const sel = this.editorView.state.selection.main;
+    const pos = sel.head;
+    const line = this.editorView.state.doc.lineAt(pos);
+
+    try {
+      // Get cursor coordinates from CodeMirror (these are screen coordinates)
+      let coords = this.getCursorCoords(pos);
+      
+      if (!coords) {
+        this.plugin.debug('Could not get coords for position:', pos, 'line:', line.number);
+        this.hideCursor();
+        return;
+      }
+
+      // Calculate character width at cursor position
+      const charWidth = this.measureCharacterWidth(pos);
+      
+      // Get line height
+      const lineHeight = this.editorView.defaultLineHeight;
+
+      // Check if cursor is within visible editor bounds
+      const scrollRect = this.editorView.scrollDOM.getBoundingClientRect();
+
+      // Cursor must be fully within visible scroll area
+      const isOutsideView = 
+        coords.top < scrollRect.top ||
+        coords.top > scrollRect.bottom - lineHeight ||
+        coords.left < scrollRect.left ||
+        coords.left > scrollRect.right - charWidth;
+
+      if (isOutsideView) {
+        this.hideCursor();
+        return;
+      }
+
+      // Use screen coordinates directly (cursor uses position: fixed)
+      const targetPosition: CursorPosition = {
+        x: coords.left,
+        y: coords.top,
+        width: charWidth,
+        height: lineHeight,
+      };
+
+      // Validate position
+      if (isNaN(targetPosition.x) || isNaN(targetPosition.y)) {
+        this.plugin.debug('Invalid position calculated:', targetPosition);
+        this.hideCursor();
+        return;
+      }
+
+      // During scrolling, set position immediately without animation
+      if (this.isScrolling) {
+        // Set position first, then show
+        if (this.cursorEl) {
+          this.cursorEl.style.left = `${targetPosition.x}px`;
+          this.cursorEl.style.top = `${targetPosition.y}px`;
+          this.cursorEl.style.width = `${targetPosition.width}px`;
+          this.cursorEl.style.height = `${targetPosition.height}px`;
+        }
+        this.animationEngine.setImmediate(targetPosition);
+        this.showCursor();
+      } else {
+        this.showCursor();
+        this.animationEngine.animateTo(targetPosition);
+      }
+      
+    } catch (e) {
+      this.plugin.debug('Error updating cursor position:', e, 'at pos:', pos, 'line:', line.number);
+      this.hideCursor();
+    }
+  }
+
+  /**
+   * Get cursor coordinates with multiple fallback strategies
+   */
+  private getCursorCoords(pos: number): { left: number; top: number } | null {
+    if (!this.editorView) return null;
+
+    // Helper to save successful coordinates
+    const saveAndReturn = (coords: { left: number; top: number }, strategyName: string) => {
+      this.lastSuccessfulCoords = coords;
+      this.plugin.debug(`${strategyName} succeeded at pos ${pos}`);
+      return coords;
+    };
+
+    // Strategy 1: Try with side: 1 (after character)
+    let coords = this.editorView.coordsAtPos(pos, 1);
+    if (coords) {
+      return saveAndReturn(coords, 'Strategy 1 (side:1)');
+    }
+
+    // Strategy 2: Try with side: -1 (before character)
+    coords = this.editorView.coordsAtPos(pos, -1);
+    if (coords) {
+      return saveAndReturn(coords, 'Strategy 2 (side:-1)');
+    }
+
+    // Strategy 3: No side parameter
+    coords = this.editorView.coordsAtPos(pos);
+    if (coords) {
+      return saveAndReturn(coords, 'Strategy 3 (no side)');
+    }
+
+    // Strategy 4: Use native CM cursor position (most reliable fallback)
+    const nativeCursorCoords = this.getNativeCursorPosition();
+    if (nativeCursorCoords) {
+      return saveAndReturn(nativeCursorCoords, 'Strategy 4 (native cursor)');
+    }
+
+    // Strategy 5: For empty lines, try to get the line block's position
+    try {
+      const lineBlock = this.editorView.lineBlockAt(pos);
+      
+      if (lineBlock) {
+        // Get the content area
+        const contentRect = this.editorView.contentDOM.getBoundingClientRect();
+        const scrollTop = this.editorView.scrollDOM.scrollTop;
+        
+        // lineBlock.top is in document coordinates (pixels from top of document)
+        // Convert to screen coordinates
+        return saveAndReturn({
+          left: contentRect.left,
+          top: contentRect.top + lineBlock.top - scrollTop,
+        }, 'Strategy 5 (lineBlock)');
+      }
+    } catch {
+      // Fallback failed
+    }
+
+    // Strategy 6: Try to find the line element in DOM and get its position
+    try {
+      const line = this.editorView.state.doc.lineAt(pos);
+      const lineEl = this.editorView.domAtPos(line.from);
+      
+      if (lineEl && lineEl.node) {
+        let element: Element | null = null;
+        
+        if (lineEl.node instanceof Element) {
+          element = lineEl.node;
+        } else if (lineEl.node.parentElement) {
+          element = lineEl.node.parentElement;
+        }
+        
+        if (element) {
+          const rect = element.getBoundingClientRect();
+          return saveAndReturn({
+            left: rect.left,
+            top: rect.top,
+          }, 'Strategy 6 (domAtPos)');
+        }
+      }
+    } catch {
+      // Fallback failed
+    }
+
+    // Strategy 7: Use last known position from animation state
+    // (these are already screen coordinates since we use fixed positioning)
+    const lastPos = this.animationEngine.getCurrentPosition();
+    if (lastPos.x > 0 || lastPos.y > 0) {
+      this.plugin.debug('Strategy 7 (last animation position) used');
+      return {
+        left: lastPos.x,
+        top: lastPos.y,
+      };
+    }
+
+    // Strategy 8: Use last successful coordinates if available
+    if (this.lastSuccessfulCoords) {
+      this.plugin.debug('Strategy 8 (last successful coords) used');
+      return this.lastSuccessfulCoords;
+    }
+
+    this.plugin.debug('All strategies failed for pos:', pos);
+    return null;
+  }
+
+  /**
+   * Get the native CodeMirror cursor position from DOM
+   * This is reliable because CM's cursor always renders correctly
+   */
+  private getNativeCursorPosition(): { left: number; top: number } | null {
+    if (!this.editorView) return null;
+
+    try {
+      // Find the native cursor element (it's hidden by CSS but still in DOM)
+      const cursorLayer = this.editorView.dom.querySelector('.cm-cursorLayer');
+      if (cursorLayer) {
+        const nativeCursor = cursorLayer.querySelector('.cm-cursor, .cm-cursor-primary');
+        if (nativeCursor) {
+          // Temporarily make it visible to get accurate position
+          const originalStyle = (nativeCursor as HTMLElement).style.cssText;
+          (nativeCursor as HTMLElement).style.cssText = 'visibility: visible !important; opacity: 0 !important;';
+          
+          const rect = nativeCursor.getBoundingClientRect();
+          
+          // Restore original style
+          (nativeCursor as HTMLElement).style.cssText = originalStyle;
+          
+          if (rect.width > 0 || rect.height > 0) {
+            return {
+              left: rect.left,
+              top: rect.top,
+            };
+          }
+        }
+      }
+    } catch (e) {
+      this.plugin.debug('Error getting native cursor position:', e);
+    }
+
+    return null;
+  }
+
+  /**
+   * Measure the width of the character at the given position
+   * This correctly handles CJK characters and other wide characters
+   */
+  private measureCharacterWidth(pos: number): number {
+    if (!this.editorView) return 8; // fallback width
+
+    const doc = this.editorView.state.doc;
+    const docLength = doc.length;
+    
+    // Handle edge case: position at or beyond document end
+    if (pos >= docLength) {
+      return this.getDefaultCharWidth();
+    }
+    
+    const line = doc.lineAt(pos);
+    const lineText = line.text;
+    const offsetInLine = pos - line.from;
+    
+    // Get the character at cursor position
+    const char = lineText[offsetInLine];
+    
+    // Empty line or at end of line
+    if (!char || lineText.length === 0) {
+      return this.getDefaultCharWidth();
+    }
+
+    try {
+      // Use coordsAtPos to measure actual rendered width
+      // Make sure we don't go beyond the document
+      const nextPos = Math.min(pos + 1, docLength);
+      
+      if (nextPos > pos) {
+        const startCoords = this.editorView.coordsAtPos(pos, 1);
+        const endCoords = this.editorView.coordsAtPos(nextPos, -1);
+        
+        if (startCoords && endCoords) {
+          const width = endCoords.left - startCoords.left;
+          if (width > 0) {
+            return width;
+          }
+        }
+      }
+    } catch {
+      // Fallback if coords measurement fails
+    }
+
+    // Fallback: estimate based on character type
+    return this.estimateCharWidth(char);
+  }
+
+  /**
+   * Estimate character width based on character type
+   */
+  private estimateCharWidth(char: string): number {
+    const defaultWidth = this.getDefaultCharWidth();
+    
+    // Check if it's a CJK character (Chinese, Japanese, Korean)
+    const cjkRanges = [
+      [0x4E00, 0x9FFF],   // CJK Unified Ideographs
+      [0x3400, 0x4DBF],   // CJK Unified Ideographs Extension A
+      [0x3000, 0x303F],   // CJK Symbols and Punctuation
+      [0xFF00, 0xFFEF],   // Halfwidth and Fullwidth Forms
+      [0xAC00, 0xD7AF],   // Korean Hangul Syllables
+      [0x3040, 0x309F],   // Hiragana
+      [0x30A0, 0x30FF],   // Katakana
+    ];
+
+    const code = char.charCodeAt(0);
+    for (const [start, end] of cjkRanges) {
+      if (code >= start && code <= end) {
+        return defaultWidth * 2; // CJK characters are typically double-width
+      }
+    }
+
+    // Check for emoji (basic detection)
+    if (code > 0x1F000) {
+      return defaultWidth * 2;
+    }
+
+    return defaultWidth;
+  }
+
+  /**
+   * Get default character width from the editor
+   */
+  private getDefaultCharWidth(): number {
+    if (!this.editorView) return 8;
+    return this.editorView.defaultCharacterWidth || 8;
   }
 
   /**
    * Update cursor shape based on vim mode
-   * Ensures smooth transition of dimensions when shape changes
    */
   private updateCursorShape(mode: VimMode) {
-    const cursorEl = this.cursorElementManager.getElement();
-    if (!cursorEl) return;
+    if (!this.cursorEl) return;
 
     const shape = this.plugin.settings.cursorShapes[mode];
-    const oldShape = (cursorEl.dataset.shape || 'block') as CursorShape;
     
-    // If shape is changing, ensure smooth transition
-    if (oldShape !== shape && this.animationEngine && this.editorView) {
-      // Get current position from animation engine
-      const currentPos = this.animationEngine.getCurrentPosition();
-      
-      // Read actual displayed dimensions from DOM (most accurate)
-      const displayedWidth = parseFloat(cursorEl.style.width || '0');
-      const displayedHeight = parseFloat(cursorEl.style.height || '0');
-      
-      // If we have valid displayed dimensions, use them as the starting point
-      // Otherwise, calculate from current animation state based on old shape
-      let startWidth = currentPos.width;
-      let startHeight = currentPos.height;
-      
-      if (displayedWidth > 0 && displayedHeight > 0) {
-        // Use actual displayed dimensions
-        startWidth = displayedWidth;
-        startHeight = displayedHeight;
-      } else {
-        // Calculate displayed dimensions from animation state based on old shape
-        const currentDisplayedDims = calculateCursorDimensions(currentPos, oldShape);
-        startWidth = currentDisplayedDims.width;
-        startHeight = currentDisplayedDims.height;
-      }
-      
-      // Update animation engine's current state to match displayed dimensions
-      // This ensures smooth transition from old shape to new shape
-      const currentDisplayedPos: CursorPosition = {
-        x: currentPos.x,
-        y: currentPos.y,
-        width: startWidth,
-        height: startHeight,
-      };
-      
-      // Update animation engine's current state to match displayed dimensions
-      this.animationEngine.setImmediate(currentDisplayedPos);
-      
-      // Update shape
-      this.cursorElementManager.updateShape(shape);
-      
-      // Trigger update which will calculate new dimensions based on new shape
-      // The animation engine will smoothly interpolate from current displayed dimensions to new ones
-      // Use scheduleUpdate instead of forceUpdate to avoid recursive calls
-      this.scheduleUpdate();
+    // Ensure cursor is visible
+    this.cursorEl.style.display = 'block';
+    this.cursorEl.style.visibility = 'visible';
+    
+    // Store current shape for use in applyCursorPosition
+    this.cursorEl.dataset.shape = shape;
+    
+    // Update blink state (only blink in insert mode)
+    if (mode === 'insert') {
+      this.cursorEl.style.animation = 'obvide-blink 1s ease-in-out infinite';
     } else {
-      // Shape not changing, just update shape
-      this.cursorElementManager.updateShape(shape);
+      this.cursorEl.style.animation = 'none';
     }
+
+    this.plugin.debug('Cursor shape updated to:', shape, 'for mode:', mode);
     
-    // Apply breathing animation if enabled
-    this.cursorElementManager.setBreathing(
-      this.plugin.settings.enableBreathingAnimation,
-      this.plugin.settings.cursorOpacity
-    );
-    
-    // Ensure moving state is properly set
-    if (!this.isCurrentlyMoving && this.plugin.settings.enableBreathingAnimation) {
-      const cursorEl = this.cursorElementManager.getElement();
-      if (cursorEl) {
-        cursorEl.classList.remove('moving');
-      }
-    }
+    // Force position update to apply new dimensions
+    setTimeout(() => {
+      this.forceUpdate();
+    }, 0);
   }
 
   /**
    * Apply cursor position from animation
-   * Uses either transform (GPU-accelerated) or left/top based on settings
-   * The position passed here already has shape-adjusted dimensions for smooth transitions
    */
   private applyCursorPosition(pos: CursorPosition) {
-    const cursorEl = this.cursorElementManager.getElement();
-    if (!cursorEl) return;
+    if (!this.cursorEl) return;
 
-    const shape = (cursorEl.dataset.shape || 'block') as CursorShape;
+    const shape = (this.cursorEl.dataset.shape || 'block') as CursorShape;
     
-    // Calculate yOffset based on shape (for underline cursor)
+    // Calculate actual dimensions based on shape
+    let width = pos.width;
+    let height = pos.height;
     let yOffset = 0;
-    if (shape === 'underline' && this.editorView) {
-      const originalLineHeight = getDefaultLineHeight(this.editorView);
-      yOffset = originalLineHeight - pos.height; // pos.height is 2 for underline
-    }
-
-    this.cursorElementManager.updatePosition(
-      pos.x,
-      pos.y,
-      pos.width,
-      pos.height,
-      this.plugin.settings.useTransformAnimation,
-      yOffset
-    );
-  }
-
-  /**
-   * Handle movement state changes for breathing animation pause
-   * Pauses breathing animation while cursor is moving, resumes after debounce when stopped
-   */
-  private handleMovementState(isMoving: boolean) {
-    // Clear any pending resume timeout
-    if (this.movementResumeTimeout !== null) {
-      clearTimeout(this.movementResumeTimeout);
-      this.movementResumeTimeout = null;
-    }
     
-    if (isMoving) {
-      // Immediately pause animation and keep cursor fully visible
-      this.isCurrentlyMoving = true;
-      this.cursorElementManager.setMoving(true, this.plugin.settings.cursorOpacity);
-    } else {
-      // Debounce: wait before resuming animation to avoid flickering
-      // This prevents animation from restarting too quickly if movement resumes
-      this.movementResumeTimeout = window.setTimeout(() => {
-        this.movementResumeTimeout = null;
-        this.isCurrentlyMoving = false;
-        // Resume animation by removing 'moving' class
-        this.cursorElementManager.setMoving(false, this.plugin.settings.cursorOpacity);
-      }, this.movementDebounceDelay);
+    switch (shape) {
+      case 'line':
+        width = 2;
+        break;
+      case 'underline':
+        height = 2;
+        yOffset = pos.height - 2;
+        break;
+      case 'block':
+      default:
+        // Use full character width and height
+        break;
     }
+
+    // Use left/top for fixed positioning (screen coordinates)
+    this.cursorEl.style.left = `${pos.x}px`;
+    this.cursorEl.style.top = `${pos.y + yOffset}px`;
+    this.cursorEl.style.width = `${width}px`;
+    this.cursorEl.style.height = `${height}px`;
   }
 }
 
 // Access to VimStateProvider from main plugin
 declare module './main' {
-  interface SmoothCursorPlugin {
+  interface ObVidePlugin {
     vimState: import('./vim-state').VimStateProvider | null;
   }
 }
+

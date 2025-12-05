@@ -1,11 +1,11 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
-import type SmoothCursorPlugin from './main';
+import type ObVidePlugin from './main';
 import type { CursorShape, VimMode } from './types';
 
-export class SmoothCursorSettingTab extends PluginSettingTab {
-  plugin: SmoothCursorPlugin;
+export class ObVideSettingTab extends PluginSettingTab {
+  plugin: ObVidePlugin;
 
-  constructor(app: App, plugin: SmoothCursorPlugin) {
+  constructor(app: App, plugin: ObVidePlugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
@@ -14,7 +14,7 @@ export class SmoothCursorSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl('h2', { text: 'Smooth Cursor - 平滑光标设置' });
+    containerEl.createEl('h2', { text: 'ObVide - Neovide风格光标设置' });
 
     // Animation toggle
     new Setting(containerEl)
@@ -44,56 +44,13 @@ export class SmoothCursorSettingTab extends PluginSettingTab {
           })
       );
 
-    // Insert mode animation section
-    containerEl.createEl('h3', { text: '输入模式动画' });
-
-    // Enable insert mode animation
-    new Setting(containerEl)
-      .setName('启用输入模式平滑动画')
-      .setDesc('在输入文字时启用光标平滑移动效果')
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.enableInsertModeAnimation)
-          .onChange(async (value) => {
-            this.plugin.settings.enableInsertModeAnimation = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    // Insert mode animation duration
-    new Setting(containerEl)
-      .setName('输入模式动画时长')
-      .setDesc('输入时光标移动动画的持续时间（毫秒），建议设置较短以保持流畅')
-      .addSlider((slider) =>
-        slider
-          .setLimits(20, 150, 10)
-          .setValue(this.plugin.settings.insertModeAnimationDuration)
-          .setDynamicTooltip()
-          .onChange(async (value) => {
-            this.plugin.settings.insertModeAnimationDuration = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    // Transform animation mode
-    new Setting(containerEl)
-      .setName('使用 Transform 动画')
-      .setDesc('使用 CSS transform 进行动画（GPU加速更流畅，但光标可能略显模糊）')
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.useTransformAnimation)
-          .onChange(async (value) => {
-            this.plugin.settings.useTransformAnimation = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
     // Cursor color
     new Setting(containerEl)
       .setName('光标颜色')
       .setDesc('自定义光标的颜色')
-      .addColorPicker((colorPicker) =>
-        colorPicker
+      .addText((text) =>
+        text
+          .setPlaceholder('#528bff')
           .setValue(this.plugin.settings.cursorColor)
           .onChange(async (value) => {
             this.plugin.settings.cursorColor = value;
@@ -113,55 +70,6 @@ export class SmoothCursorSettingTab extends PluginSettingTab {
           .setDynamicTooltip()
           .onChange(async (value) => {
             this.plugin.settings.cursorOpacity = value;
-            await this.plugin.saveSettings();
-            this.plugin.updateCursorStyle();
-          })
-      );
-
-    // Breathing animation section
-    containerEl.createEl('h3', { text: '呼吸动画' });
-
-    // Enable breathing animation
-    new Setting(containerEl)
-      .setName('启用呼吸动画')
-      .setDesc('为光标添加平滑的呼吸效果（在所有模式下生效）')
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.enableBreathingAnimation)
-          .onChange(async (value) => {
-            this.plugin.settings.enableBreathingAnimation = value;
-            await this.plugin.saveSettings();
-            this.plugin.updateCursorStyle();
-          })
-      );
-
-    // Breathing animation duration
-    new Setting(containerEl)
-      .setName('呼吸动画时长')
-      .setDesc('呼吸动画一个完整周期的时长（秒）')
-      .addSlider((slider) =>
-        slider
-          .setLimits(0.5, 5, 0.1)
-          .setValue(this.plugin.settings.breathingAnimationDuration)
-          .setDynamicTooltip()
-          .onChange(async (value) => {
-            this.plugin.settings.breathingAnimationDuration = value;
-            await this.plugin.saveSettings();
-            this.plugin.updateCursorStyle();
-          })
-      );
-
-    // Breathing minimum opacity
-    new Setting(containerEl)
-      .setName('呼吸最小透明度')
-      .setDesc('呼吸动画时光标淡出到的最小透明度（0-1）')
-      .addSlider((slider) =>
-        slider
-          .setLimits(0.1, 0.9, 0.1)
-          .setValue(this.plugin.settings.breathingMinOpacity)
-          .setDynamicTooltip()
-          .onChange(async (value) => {
-            this.plugin.settings.breathingMinOpacity = value;
             await this.plugin.saveSettings();
             this.plugin.updateCursorStyle();
           })
@@ -202,6 +110,19 @@ export class SmoothCursorSettingTab extends PluginSettingTab {
             });
         });
     }
+
+    // Non-editor support
+    new Setting(containerEl)
+      .setName('非编辑器区域支持')
+      .setDesc('在标题栏、搜索框等区域也启用自定义光标')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.enableInNonEditor)
+          .onChange(async (value) => {
+            this.plugin.settings.enableInNonEditor = value;
+            await this.plugin.saveSettings();
+          })
+      );
 
     // Debug mode
     new Setting(containerEl)
