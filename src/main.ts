@@ -7,6 +7,8 @@ import { AnimationEngine } from './animation';
 import { DEFAULT_SETTINGS, type SmoothCursorSettings, type VimMode } from './types';
 import { StyleManager } from './core/style-manager';
 import { DiagnosticService } from './services/diagnostic-service';
+import type { CodeMirror5Editor } from './types/obsidian-extensions';
+import { getEditorViewFromMarkdownView, getCodeMirror5EditorFromMarkdownView } from './utils/type-guards';
 
 export default class SmoothCursorPlugin extends Plugin {
   settings: SmoothCursorSettings = DEFAULT_SETTINGS;
@@ -14,7 +16,7 @@ export default class SmoothCursorPlugin extends Plugin {
   cursorRenderer: CursorRenderer | null = null;
   animationEngine: AnimationEngine | null = null;
   private activeEditorView: EditorView | null = null;
-  private currentCodeMirrorEditor: any = null; // CodeMirror 5 editor instance for vim-mode-change event
+  private currentCodeMirrorEditor: CodeMirror5Editor | null = null; // CodeMirror 5 editor instance for vim-mode-change event
   
   // Managers
   private styleManager: StyleManager;
@@ -153,13 +155,13 @@ export default class SmoothCursorPlugin extends Plugin {
     const view = leaf.view;
     if (view instanceof MarkdownView) {
       // Get CodeMirror 6 EditorView from MarkdownView
-      // @ts-expect-error - accessing internal API
-      const editorView = view.editor?.cm as EditorView | undefined;
+      // WARNING: This accesses internal API (view.editor.cm) which may break in future Obsidian updates
+      const editorView = getEditorViewFromMarkdownView(view);
       
       // Get CodeMirror 5 editor instance for vim-mode-change event
       // For CM6 this actually returns an instance of the object named CodeMirror from cm_adapter of codemirror_vim
-      // accessing internal API
-      const codeMirrorEditor = (view as any).sourceMode?.cmEditor?.cm?.cm;
+      // WARNING: This accesses internal API which may break in future Obsidian updates
+      const codeMirrorEditor = getCodeMirror5EditorFromMarkdownView(view);
       
       if (editorView) {
         this.activeEditorView = editorView;

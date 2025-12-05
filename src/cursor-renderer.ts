@@ -11,6 +11,7 @@ import { EventManager } from './core/event-manager';
 import { NativeCursorHider } from './core/native-cursor-hider';
 import { getDefaultLineHeight } from './utils/editor-utils';
 import { isElementConnected } from './utils/dom-utils';
+import { hasOriginalDispatch } from './utils/type-guards';
 
 /**
  * Create a ViewPlugin that listens for cursor position changes
@@ -148,17 +149,25 @@ export class CursorRenderer {
   /**
    * Setup CodeMirror transaction listener by intercepting EditorView.dispatch
    * This is a workaround since we can't add ViewPlugin to extensions in Obsidian
+   * WARNING: This approach may conflict with other plugins that also intercept dispatch
    */
   private setupTransactionListener() {
     if (!this.editorView) return;
 
     // Intercept EditorView.dispatch to listen to all transactions
     // Store original dispatch for cleanup
-    if (!(this.editorView as any).__originalDispatch) {
-      (this.editorView as any).__originalDispatch = this.editorView.dispatch.bind(this.editorView);
+    // WARNING: Using internal property __originalDispatch which may conflict with other plugins
+    if (!hasOriginalDispatch(this.editorView)) {
+      this.editorView.__originalDispatch = this.editorView.dispatch.bind(this.editorView);
     }
     
-    const originalDispatch = (this.editorView as any).__originalDispatch;
+    // At this point, __originalDispatch must be defined
+    if (!hasOriginalDispatch(this.editorView)) {
+      this.plugin.debug('Failed to store original dispatch');
+      return;
+    }
+    
+    const originalDispatch = this.editorView.__originalDispatch;
     const self = this;
     
     this.editorView.dispatch = function(tr: any) {
@@ -596,9 +605,10 @@ export class CursorRenderer {
    */
   detach() {
     // Restore original dispatch if we intercepted it
-    if (this.editorView && (this.editorView as any).__originalDispatch) {
-      this.editorView.dispatch = (this.editorView as any).__originalDispatch;
-      delete (this.editorView as any).__originalDispatch;
+    if (this.editorView && hasOriginalDispatch(this.editorView)) {
+      this.editorView.dispatch = this.editorView.__originalDispatch;
+      // Use type assertion for delete since we know it exists
+      delete (this.editorView as { __originalDispatch?: (tr: any) => void }).__originalDispatch;
     }
     
     // Remove all event listeners
