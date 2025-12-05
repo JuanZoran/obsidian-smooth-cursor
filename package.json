@@ -1,6 +1,6 @@
 {
 	"name": "smooth-cursor",
-	"version": "1.2.0",
+	"version": "1.2.1",
 	"description": "为Obsidian实现平滑光标动画效果",
 	"main": "main.js",
 	"scripts": {

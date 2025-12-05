@@ -39,6 +39,8 @@ export class CursorRenderer {
   private scrollTimeout: number | null = null;
   private lastHealthCheckTime = 0;
   private isDestroyed = false;
+  private focusHandler: ((e: FocusEvent) => void) | null = null;
+  private blurHandler: ((e: FocusEvent) => void) | null = null;
   
   // Performance optimization: cached states
   private cachedEditorHasActiveClass = false;
@@ -104,6 +106,9 @@ export class CursorRenderer {
     
     // Setup scroll event listener for immediate position updates during scroll
     this.setupScrollListener();
+    
+    // Setup focus event listener for immediate response to focus changes
+    this.setupFocusListener();
     
     this.isAttached = true;
     
@@ -309,6 +314,61 @@ export class CursorRenderer {
   }
 
   /**
+   * Setup focus event listener for immediate response to focus changes
+   * This prevents native cursor flash when focus returns to editor
+   */
+  private setupFocusListener() {
+    if (!this.editorView) return;
+
+    this.focusHandler = (e: FocusEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target || !this.editorView) return;
+
+      // Check if focus is entering the editor
+      const editorDom = this.editorView.dom;
+      if (editorDom.contains(target) || editorDom === target) {
+        // Immediately add smooth-cursor-active class to hide native cursor
+        this.ensureCursorHealth();
+        
+        // Update cached focus state immediately
+        this.cachedIsFocused = true;
+        this.lastFocusCheckTime = performance.now();
+        
+        // Immediately update cursor position
+        this.scheduleUpdate();
+        
+        this.plugin.debug('Focus returned to editor, cursor updated immediately');
+      }
+    };
+
+    this.blurHandler = (e: FocusEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target || !this.editorView) return;
+
+      // Check if focus is leaving the editor
+      const editorDom = this.editorView.dom;
+      if (editorDom.contains(target) || editorDom === target) {
+        // Small delay to check if focus moved to another part of editor
+        setTimeout(() => {
+          if (this.editorView) {
+            const isStillFocused = this.checkEditorFocused();
+            this.cachedIsFocused = isStillFocused;
+            this.lastFocusCheckTime = performance.now();
+            
+            if (!isStillFocused) {
+              this.hideCursor();
+            }
+          }
+        }, 10);
+      }
+    };
+
+    // Use capture phase to catch focus events early
+    document.addEventListener('focusin', this.focusHandler, true);
+    document.addEventListener('focusout', this.blurHandler, true);
+  }
+
+  /**
    * Update cursor position immediately (no animation) - used during scroll
    */
   private updatePositionImmediate() {
@@ -366,6 +426,16 @@ export class CursorRenderer {
     if (this.editorView && this.scrollHandler) {
       this.editorView.scrollDOM.removeEventListener('scroll', this.scrollHandler);
       this.scrollHandler = null;
+    }
+    
+    // Remove focus event listeners
+    if (this.focusHandler) {
+      document.removeEventListener('focusin', this.focusHandler, true);
+      this.focusHandler = null;
+    }
+    if (this.blurHandler) {
+      document.removeEventListener('focusout', this.blurHandler, true);
+      this.blurHandler = null;
     }
     
     this.setEditorActiveClass(false);
