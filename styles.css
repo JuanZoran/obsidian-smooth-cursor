@@ -1,28 +1,28 @@
-/* ObVide - Neovide-style cursor for Obsidian */
+/* Smooth Cursor - 平滑光标动画插件 for Obsidian */
 
 /* Base cursor styling - dynamic styles are injected via JavaScript */
 
 /* Ensure smooth transitions */
-.obvide-cursor {
+.smooth-cursor {
   transition-property: transform;
   transition-timing-function: cubic-bezier(0.25, 0.1, 0.25, 1);
 }
 
 /* Pause blink animation while cursor is moving */
-.obvide-cursor.moving {
+.smooth-cursor.moving {
   animation: none !important;
-  opacity: var(--obvide-cursor-opacity, 0.8) !important;
+  opacity: var(--smooth-cursor-opacity, 0.8) !important;
 }
 
 /* Transform animation mode - GPU accelerated */
-.obvide-cursor.transform-mode {
+.smooth-cursor.transform-mode {
   will-change: transform, width, height;
   /* Enable GPU acceleration */
   transform: translateZ(0);
 }
 
 /* Visual mode selection highlight */
-.obvide-visual-selection {
+.smooth-cursor-visual-selection {
   position: absolute;
   pointer-events: none;
   background-color: rgba(82, 139, 255, 0.3);
@@ -30,14 +30,14 @@
 }
 
 /* Status bar indicator */
-.obvide-status {
+.smooth-cursor-status {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   font-size: 12px;
 }
 
-.obvide-mode-indicator {
+.smooth-cursor-mode-indicator {
   padding: 2px 6px;
   border-radius: 3px;
   font-weight: 500;
@@ -45,27 +45,27 @@
   font-size: 10px;
 }
 
-.obvide-mode-indicator.normal {
+.smooth-cursor-mode-indicator.normal {
   background-color: rgba(82, 139, 255, 0.2);
   color: #528bff;
 }
 
-.obvide-mode-indicator.insert {
+.smooth-cursor-mode-indicator.insert {
   background-color: rgba(152, 195, 121, 0.2);
   color: #98c379;
 }
 
-.obvide-mode-indicator.visual {
+.smooth-cursor-mode-indicator.visual {
   background-color: rgba(198, 120, 221, 0.2);
   color: #c678dd;
 }
 
-.obvide-mode-indicator.replace {
+.smooth-cursor-mode-indicator.replace {
   background-color: rgba(224, 108, 117, 0.2);
   color: #e06c75;
 }
 
-.obvide-mode-indicator.command {
+.smooth-cursor-mode-indicator.command {
   background-color: rgba(209, 154, 102, 0.2);
   color: #d19a66;
 }

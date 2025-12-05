@@ -43,7 +43,7 @@ export interface CursorShapeConfig {
 /**
  * Plugin settings interface
  */
-export interface ObVideSettings {
+export interface SmoothCursorSettings {
   enableAnimation: boolean;
   animationDuration: number;
   cursorColor: string;
@@ -63,7 +63,7 @@ export interface ObVideSettings {
 /**
  * Default plugin settings
  */
-export const DEFAULT_SETTINGS: ObVideSettings = {
+export const DEFAULT_SETTINGS: SmoothCursorSettings = {
   enableAnimation: true,
   animationDuration: 100,
   cursorColor: '#528bff',

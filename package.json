@@ -1,7 +1,7 @@
 {
-	"name": "ObVide",
+	"name": "smooth-cursor",
 	"version": "1.0.0",
-	"description": "为Obsidian实现Neovide风格光标动画",
+	"description": "为Obsidian实现平滑光标动画效果",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",

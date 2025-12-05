@@ -1,5 +1,5 @@
 import { EditorView, ViewPlugin, ViewUpdate } from '@codemirror/view';
-import type ObVidePlugin from './main';
+import type SmoothCursorPlugin from './main';
 import type { AnimationEngine } from './animation';
 import type { CursorPosition, CursorShape, VimMode } from './types';
 import { calculateCursorDimensions, isCursorInView } from './cursor-utils';
@@ -24,7 +24,7 @@ function createCursorUpdatePlugin(onUpdate: (update: ViewUpdate) => void) {
  * Optimized for performance with caching and throttled updates
  */
 export class CursorRenderer {
-  private plugin: ObVidePlugin;
+  private plugin: SmoothCursorPlugin;
   private animationEngine: AnimationEngine;
   private editorView: EditorView | null = null;
   private cursorEl: HTMLDivElement | null = null;
@@ -64,7 +64,7 @@ export class CursorRenderer {
   private typingTimeout: number | null = null;
   private lastUpdateWasTyping = false;
 
-  constructor(plugin: ObVidePlugin, animationEngine: AnimationEngine) {
+  constructor(plugin: SmoothCursorPlugin, animationEngine: AnimationEngine) {
     this.plugin = plugin;
     this.animationEngine = animationEngine;
     
@@ -432,13 +432,13 @@ export class CursorRenderer {
       this.cursorEl = null;
     }
 
-    document.querySelectorAll('.obvide-cursor').forEach(el => el.remove());
+    document.querySelectorAll('.smooth-cursor').forEach(el => el.remove());
 
     this.setEditorActiveClass(true);
     this.cachedEditorHasActiveClass = true;
 
     this.cursorEl = document.createElement('div');
-    this.cursorEl.className = 'obvide-cursor';
+    this.cursorEl.className = 'smooth-cursor';
     this.cursorEl.dataset.editorId = this.getEditorId();
     
     // Add transform-mode class if enabled
@@ -454,7 +454,7 @@ export class CursorRenderer {
       background-color: ${this.plugin.settings.cursorColor} !important;
       opacity: ${this.plugin.settings.cursorOpacity} !important;
       border-radius: 1px;
-      --obvide-cursor-opacity: ${this.plugin.settings.cursorOpacity};
+      --smooth-cursor-opacity: ${this.plugin.settings.cursorOpacity};
     `;
     
     this.updateCursorShape(this.plugin.getVimMode());
@@ -565,8 +565,8 @@ export class CursorRenderer {
     }
     
     // Verify class is actually present (DOM check)
-    if (this.editorView && !this.editorView.dom.classList.contains('obvide-active')) {
-      this.editorView.dom.classList.add('obvide-active');
+    if (this.editorView && !this.editorView.dom.classList.contains('smooth-cursor-active')) {
+      this.editorView.dom.classList.add('smooth-cursor-active');
       this.cachedEditorHasActiveClass = true;
     }
     
@@ -585,13 +585,13 @@ export class CursorRenderer {
     
     try {
       if (active) {
-        if (!this.editorView.dom.classList.contains('obvide-active')) {
-          this.editorView.dom.classList.add('obvide-active');
+        if (!this.editorView.dom.classList.contains('smooth-cursor-active')) {
+          this.editorView.dom.classList.add('smooth-cursor-active');
           this.cachedEditorHasActiveClass = true;
         }
       } else {
-        if (this.editorView.dom.classList.contains('obvide-active')) {
-          this.editorView.dom.classList.remove('obvide-active');
+        if (this.editorView.dom.classList.contains('smooth-cursor-active')) {
+          this.editorView.dom.classList.remove('smooth-cursor-active');
           this.cachedEditorHasActiveClass = false;
         }
       }
@@ -830,7 +830,7 @@ export class CursorRenderer {
     this.cursorEl.dataset.shape = shape;
     
     if (mode === 'insert') {
-      this.cursorEl.style.animation = 'obvide-blink 1s ease-in-out infinite';
+      this.cursorEl.style.animation = 'smooth-cursor-blink 1s ease-in-out infinite';
     } else {
       this.cursorEl.style.animation = 'none';
     }
@@ -886,7 +886,7 @@ export class CursorRenderer {
 
 // Access to VimStateProvider from main plugin
 declare module './main' {
-  interface ObVidePlugin {
+  interface SmoothCursorPlugin {
     vimState: import('./vim-state').VimStateProvider | null;
   }
 }

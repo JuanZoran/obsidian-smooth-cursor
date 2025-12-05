@@ -1,14 +1,14 @@
 import { Plugin, MarkdownView, WorkspaceLeaf, Notice } from 'obsidian';
 import { EditorView } from '@codemirror/view';
-import { ObVideSettingTab } from './settings';
+import { SmoothCursorSettingTab } from './settings';
 import { VimStateProvider } from './vim-state';
 import { CursorRenderer } from './cursor-renderer';
 import { AnimationEngine } from './animation';
 import { NonEditorCursor } from './non-editor-cursor';
-import { DEFAULT_SETTINGS, type ObVideSettings, type VimMode } from './types';
+import { DEFAULT_SETTINGS, type SmoothCursorSettings, type VimMode } from './types';
 
-export default class ObVidePlugin extends Plugin {
-  settings: ObVideSettings = DEFAULT_SETTINGS;
+export default class SmoothCursorPlugin extends Plugin {
+  settings: SmoothCursorSettings = DEFAULT_SETTINGS;
   vimState: VimStateProvider | null = null;
   private cursorRenderer: CursorRenderer | null = null;
   private animationEngine: AnimationEngine | null = null;
@@ -21,7 +21,7 @@ export default class ObVidePlugin extends Plugin {
     await this.loadSettings();
     
     // Add settings tab
-    this.addSettingTab(new ObVideSettingTab(this.app, this));
+    this.addSettingTab(new SmoothCursorSettingTab(this.app, this));
     
     // Initialize components
     this.vimState = new VimStateProvider(this);
@@ -45,7 +45,7 @@ export default class ObVidePlugin extends Plugin {
     // Initial setup when layout is ready
     this.app.workspace.onLayoutReady(() => {
       this.onActiveLeafChange(this.app.workspace.activeLeaf);
-      this.debug('ObVide plugin loaded');
+      this.debug('Smooth Cursor plugin loaded');
     });
 
     // Add commands for debugging
@@ -54,7 +54,7 @@ export default class ObVidePlugin extends Plugin {
       name: '强制刷新光标',
       callback: () => {
         this.cursorRenderer?.forceUpdate();
-        console.log('[ObVide] Cursor force refreshed');
+        console.log('[SmoothCursor] Cursor force refreshed');
       },
     });
 
@@ -92,9 +92,9 @@ export default class ObVidePlugin extends Plugin {
       info.documentLength = doc.length;
       
       // Check if cursor element exists (now in document.body)
-      const cursorEl = document.body.querySelector('.obvide-cursor');
+      const cursorEl = document.body.querySelector('.smooth-cursor');
       info.cursorElementExists = !!cursorEl;
-      info.cursorElementInBody = !!document.body.querySelector('.obvide-cursor');
+      info.cursorElementInBody = !!document.body.querySelector('.smooth-cursor');
       
       if (cursorEl) {
         const rect = cursorEl.getBoundingClientRect();
@@ -125,8 +125,8 @@ export default class ObVidePlugin extends Plugin {
         height: contentRect.height,
       };
       
-      // Check if obvide-active class is set
-      info.editorHasActiveClass = this.activeEditorView.dom.classList.contains('obvide-active');
+      // Check if smooth-cursor-active class is set
+      info.editorHasActiveClass = this.activeEditorView.dom.classList.contains('smooth-cursor-active');
 
       // Check native cursor
       const nativeCursor = this.activeEditorView.dom.querySelector('.cm-cursor, .cm-cursor-primary');
@@ -150,11 +150,11 @@ export default class ObVidePlugin extends Plugin {
       }
     }
 
-    console.log('[ObVide] Cursor Diagnostic:', info);
+    console.log('[SmoothCursor] Cursor Diagnostic:', info);
     console.table(info);
     
     // Also show a notice
-    const noticeText = `ObVide 诊断信息已输出到控制台\n行: ${info.lineNumber || '?'}, 位置: ${info.cursorPosition || '?'}`;
+    const noticeText = `Smooth Cursor 诊断信息已输出到控制台\n行: ${info.lineNumber || '?'}, 位置: ${info.cursorPosition || '?'}`;
     new Notice(noticeText, 5000);
   }
 
@@ -165,7 +165,7 @@ export default class ObVidePlugin extends Plugin {
     this.nonEditorCursor?.destroy();
     this.styleEl?.remove();
     this.statusBarEl?.remove();
-    this.debug('ObVide plugin unloaded');
+    this.debug('Smooth Cursor plugin unloaded');
   }
 
   async loadSettings() {
@@ -204,7 +204,7 @@ export default class ObVidePlugin extends Plugin {
    */
   debug(...args: unknown[]) {
     if (this.settings.debug) {
-      console.log('[ObVide]', ...args);
+      console.log('[SmoothCursor]', ...args);
     }
   }
 
@@ -235,14 +235,14 @@ export default class ObVidePlugin extends Plugin {
 
   private injectStyles() {
     this.styleEl = document.createElement('style');
-    this.styleEl.id = 'obvide-styles';
+    this.styleEl.id = 'smooth-cursor-styles';
     this.styleEl.textContent = this.generateStyles();
     document.head.appendChild(this.styleEl);
   }
 
   private setupStatusBar() {
     this.statusBarEl = this.addStatusBarItem();
-    this.statusBarEl.addClass('obvide-status');
+    this.statusBarEl.addClass('smooth-cursor-status');
     this.updateStatusBar();
     
     // Listen for mode changes to update status bar
@@ -263,21 +263,21 @@ export default class ObVidePlugin extends Plugin {
     this.statusBarEl.empty();
     
     const indicator = this.statusBarEl.createEl('span', {
-      cls: `obvide-mode-indicator ${mode}`,
+      cls: `smooth-cursor-mode-indicator ${mode}`,
       text: mode.toUpperCase(),
     });
-    indicator.setAttribute('aria-label', `ObVide: ${mode} mode`);
+    indicator.setAttribute('aria-label', `Smooth Cursor: ${mode} mode`);
   }
 
   private generateStyles(): string {
     const { cursorColor, cursorOpacity } = this.settings;
     
     return `
-      /* Hide native cursor when ObVide is active - CodeMirror 6 */
+      /* Hide native cursor when Smooth Cursor is active - CodeMirror 6 */
       /* Use visibility:hidden instead of display:none so we can still read position from DOM */
-      .obvide-active .cm-cursor,
-      .obvide-active .cm-cursor-primary,
-      .obvide-active .cm-cursor-secondary {
+      .smooth-cursor-active .cm-cursor,
+      .smooth-cursor-active .cm-cursor-primary,
+      .smooth-cursor-active .cm-cursor-secondary {
         visibility: hidden !important;
         opacity: 0 !important;
         border-left-color: transparent !important;
@@ -286,22 +286,22 @@ export default class ObVidePlugin extends Plugin {
       }
       
       /* Keep cursor layer in DOM but make cursors invisible */
-      .obvide-active .cm-cursorLayer {
+      .smooth-cursor-active .cm-cursorLayer {
         /* Don't use display:none - keep in DOM for position reference */
         pointer-events: none;
       }
       
-      .obvide-active .cm-content {
+      .smooth-cursor-active .cm-content {
         caret-color: transparent !important;
       }
       
       /* Ensure text selection is still visible but cursor is hidden */
-      .obvide-active .cm-selectionBackground {
+      .smooth-cursor-active .cm-selectionBackground {
         /* Keep selection visible */
       }
 
-      /* ObVide cursor container */
-      .obvide-cursor {
+      /* Smooth Cursor cursor container */
+      .smooth-cursor {
         position: absolute;
         pointer-events: none;
         z-index: 100;
@@ -312,31 +312,31 @@ export default class ObVidePlugin extends Plugin {
         transition: background-color 0.15s ease;
       }
 
-      .obvide-cursor.block {
+      .smooth-cursor.block {
         /* Block cursor - full character width */
       }
 
-      .obvide-cursor.line {
+      .smooth-cursor.line {
         width: 2px !important;
       }
 
-      .obvide-cursor.underline {
+      .smooth-cursor.underline {
         height: 2px !important;
         bottom: 0;
       }
 
       /* Cursor blink animation */
-      @keyframes obvide-blink {
+      @keyframes smooth-cursor-blink {
         0%, 100% { opacity: ${cursorOpacity}; }
         50% { opacity: ${cursorOpacity * 0.3}; }
       }
 
-      .obvide-cursor.blink {
-        animation: obvide-blink 1s ease-in-out infinite;
+      .smooth-cursor.blink {
+        animation: smooth-cursor-blink 1s ease-in-out infinite;
       }
 
       /* Non-editor cursor styles */
-      .obvide-non-editor-cursor {
+      .smooth-cursor-non-editor {
         position: absolute;
         pointer-events: none;
         z-index: 1000;

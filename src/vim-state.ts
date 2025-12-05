@@ -1,5 +1,5 @@
 import { EditorView } from '@codemirror/view';
-import type ObVidePlugin from './main';
+import type SmoothCursorPlugin from './main';
 import type { VimMode } from './types';
 
 /**
@@ -8,7 +8,7 @@ import type { VimMode } from './types';
  * Optimized for performance with smart polling
  */
 export class VimStateProvider {
-  private plugin: ObVidePlugin;
+  private plugin: SmoothCursorPlugin;
   private currentMode: VimMode = 'normal';
   private editorView: EditorView | null = null;
   private modeChangeCallbacks: Set<(mode: VimMode) => void> = new Set();
@@ -21,7 +21,7 @@ export class VimStateProvider {
   private isEditorFocused = false;
   private pollIntervalMs = 500; // Increased from 200ms to 500ms
 
-  constructor(plugin: ObVidePlugin) {
+  constructor(plugin: SmoothCursorPlugin) {
     this.plugin = plugin;
     this.setupGlobalModeDetection();
     this.setupKeyboardDetection();

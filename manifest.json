@@ -1,9 +1,9 @@
 {
-	"id": "obvide",
-	"name": "ObVide",
+	"id": "smooth-cursor",
+	"name": "Smooth Cursor",
 	"version": "1.0.0",
 	"minAppVersion": "1.6.0",
-	"description": "为Obsidian实现Neovide风格光标动画",
+	"description": "为Obsidian实现平滑光标动画效果",
 	"author": "Zoran",
 	"authorUrl": "https://github.com/JuanZoran",
 	"isDesktopOnly": true

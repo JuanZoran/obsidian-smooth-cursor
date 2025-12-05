@@ -1,4 +1,4 @@
-import type ObVidePlugin from './main';
+import type SmoothCursorPlugin from './main';
 import type { CursorPosition } from './types';
 
 /**
@@ -10,7 +10,7 @@ import type { CursorPosition } from './types';
  * - Optimized distance calculations
  */
 export class AnimationEngine {
-  private plugin: ObVidePlugin;
+  private plugin: SmoothCursorPlugin;
   private currentPos: CursorPosition = { x: 0, y: 0, width: 0, height: 0 };
   private targetPos: CursorPosition = { x: 0, y: 0, width: 0, height: 0 };
   private rafId: number | null = null;
@@ -31,7 +31,7 @@ export class AnimationEngine {
   // Movement callback for blink pause integration
   private onMovementCallback: ((isMoving: boolean) => void) | null = null;
 
-  constructor(plugin: ObVidePlugin) {
+  constructor(plugin: SmoothCursorPlugin) {
     this.plugin = plugin;
     this.updateLerpFactor();
   }

@@ -1,4 +1,4 @@
-import type ObVidePlugin from './main';
+import type SmoothCursorPlugin from './main';
 import type { VimMode, CursorPosition, CursorShape } from './types';
 import { calculateCursorDimensions } from './cursor-utils';
 
@@ -8,7 +8,7 @@ import { calculateCursorDimensions } from './cursor-utils';
  * Optimized with reusable measurement element
  */
 export class NonEditorCursor {
-  private plugin: ObVidePlugin;
+  private plugin: SmoothCursorPlugin;
   private cursorEl: HTMLDivElement | null = null;
   private measureSpan: HTMLSpanElement | null = null; // Reusable measurement element
   private activeInput: HTMLElement | null = null;
@@ -20,7 +20,7 @@ export class NonEditorCursor {
   private isActive = false;
   private lastMeasuredFont = '';
 
-  constructor(plugin: ObVidePlugin) {
+  constructor(plugin: SmoothCursorPlugin) {
     this.plugin = plugin;
     this.setupEventListeners();
     this.createCursorElement();
@@ -41,7 +41,7 @@ export class NonEditorCursor {
 
   private createCursorElement() {
     this.cursorEl = document.createElement('div');
-    this.cursorEl.className = 'obvide-non-editor-cursor';
+    this.cursorEl.className = 'smooth-cursor-non-editor';
     this.cursorEl.style.cssText = `
       position: fixed;
       pointer-events: none;

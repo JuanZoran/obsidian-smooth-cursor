@@ -1,11 +1,11 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
-import type ObVidePlugin from './main';
+import type SmoothCursorPlugin from './main';
 import type { CursorShape, VimMode } from './types';
 
-export class ObVideSettingTab extends PluginSettingTab {
-  plugin: ObVidePlugin;
+export class SmoothCursorSettingTab extends PluginSettingTab {
+  plugin: SmoothCursorPlugin;
 
-  constructor(app: App, plugin: ObVidePlugin) {
+  constructor(app: App, plugin: SmoothCursorPlugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
@@ -14,7 +14,7 @@ export class ObVideSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl('h2', { text: 'ObVide - Neovide风格光标设置' });
+    containerEl.createEl('h2', { text: 'Smooth Cursor - 平滑光标设置' });
 
     // Animation toggle
     new Setting(containerEl)
