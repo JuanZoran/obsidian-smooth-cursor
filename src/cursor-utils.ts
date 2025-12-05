@@ -2,50 +2,47 @@ import type { CursorPosition, CursorShape } from './types';
 
 /**
  * Calculate cursor dimensions based on shape
- * @param pos - Cursor position with base width/height
- * @param shape - Cursor shape (block, line, underline)
- * @returns Adjusted width, height, and y offset
+ * Extracted to avoid duplication between CursorRenderer and NonEditorCursor
  */
 export function calculateCursorDimensions(
-  pos: CursorPosition,
+  position: CursorPosition,
   shape: CursorShape
 ): { width: number; height: number; yOffset: number } {
-  let width = pos.width;
-  let height = pos.height;
+  let width = position.width;
+  let height = position.height;
   let yOffset = 0;
-
+  
   switch (shape) {
     case 'line':
-      // Line cursor: thin vertical bar
       width = 2;
       break;
     case 'underline':
-      // Underline cursor: thin horizontal bar at bottom
       height = 2;
-      yOffset = pos.height - 2;
+      yOffset = position.height - 2;
       break;
     case 'block':
     default:
-      // Block cursor: full character width
+      // Use full character width and height
       break;
   }
-
+  
   return { width, height, yOffset };
 }
 
 /**
- * Check if cursor position is within the visible viewport
- * @param pos - Cursor position
- * @returns Whether the cursor is visible in the viewport
+ * Check if cursor position is within visible scroll area
  */
-export function isCursorInView(pos: CursorPosition): boolean {
-  const viewportWidth = window.innerWidth;
-  const viewportHeight = window.innerHeight;
-
-  return (
-    pos.x >= 0 &&
-    pos.x <= viewportWidth &&
-    pos.y >= 0 &&
-    pos.y <= viewportHeight
+export function isCursorInView(
+  coords: { left: number; top: number },
+  charWidth: number,
+  lineHeight: number,
+  scrollRect: DOMRect
+): boolean {
+  return !(
+    coords.top < scrollRect.top ||
+    coords.top > scrollRect.bottom - lineHeight ||
+    coords.left < scrollRect.left ||
+    coords.left > scrollRect.right - charWidth
   );
 }
+

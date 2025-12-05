@@ -5,6 +5,7 @@ import type { VimMode } from './types';
 /**
  * VimStateProvider - Abstracts vim mode detection from different sources
  * Supports both Obsidian's built-in vim mode and community plugins
+ * Optimized for performance with smart polling
  */
 export class VimStateProvider {
   private plugin: ObVidePlugin;
@@ -14,11 +15,17 @@ export class VimStateProvider {
   private observer: MutationObserver | null = null;
   private pollInterval: number | null = null;
   private keydownHandler: ((e: KeyboardEvent) => void) | null = null;
+  private focusHandler: ((e: FocusEvent) => void) | null = null;
+  private blurHandler: ((e: FocusEvent) => void) | null = null;
+  private detectModeScheduled = false;
+  private isEditorFocused = false;
+  private pollIntervalMs = 500; // Increased from 200ms to 500ms
 
   constructor(plugin: ObVidePlugin) {
     this.plugin = plugin;
     this.setupGlobalModeDetection();
     this.setupKeyboardDetection();
+    this.setupFocusDetection();
   }
 
   /**
@@ -26,8 +33,30 @@ export class VimStateProvider {
    */
   attach(editorView: EditorView) {
     this.editorView = editorView;
+    this.isEditorFocused = this.checkEditorFocused();
     this.detectModeFromEditor();
     this.setupEditorModeListener();
+    this.setupEditorObserver();
+  }
+
+  /**
+   * Setup MutationObserver for the specific editor
+   */
+  private setupEditorObserver() {
+    if (!this.editorView) return;
+    
+    if (this.observer) {
+      this.observer.disconnect();
+    }
+    
+    // Only observe editor DOM, not entire subtree for better performance
+    if (this.observer) {
+      this.observer.observe(this.editorView.dom, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: false, // Changed from true to false - only observe editor root
+      });
+    }
   }
 
   /**
@@ -35,7 +64,17 @@ export class VimStateProvider {
    */
   detach() {
     this.editorView = null;
+    this.isEditorFocused = false;
     this.stopPolling();
+    
+    if (this.observer) {
+      this.observer.disconnect();
+      this.observer.observe(document.body, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: false,
+      });
+    }
   }
 
   /**
@@ -63,6 +102,12 @@ export class VimStateProvider {
     if (this.keydownHandler) {
       document.removeEventListener('keydown', this.keydownHandler, true);
     }
+    if (this.focusHandler) {
+      document.removeEventListener('focusin', this.focusHandler, true);
+    }
+    if (this.blurHandler) {
+      document.removeEventListener('focusout', this.blurHandler, true);
+    }
   }
 
   private setMode(mode: VimMode) {
@@ -74,40 +119,95 @@ export class VimStateProvider {
   }
 
   /**
+   * Check if editor has focus
+   */
+  private checkEditorFocused(): boolean {
+    if (!this.editorView) return false;
+    const activeElement = document.activeElement;
+    if (!activeElement) return false;
+    return this.editorView.dom.contains(activeElement) || this.editorView.dom === activeElement;
+  }
+
+  /**
+   * Setup focus detection to pause/resume polling
+   */
+  private setupFocusDetection() {
+    this.focusHandler = (e: FocusEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.closest('.cm-editor')) {
+        this.isEditorFocused = true;
+        // Detect mode immediately on focus
+        this.detectModeFromEditor();
+      }
+    };
+
+    this.blurHandler = (e: FocusEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.closest('.cm-editor')) {
+        // Small delay to check if focus moved to another part of editor
+        setTimeout(() => {
+          this.isEditorFocused = this.checkEditorFocused();
+        }, 10);
+      }
+    };
+
+    document.addEventListener('focusin', this.focusHandler, true);
+    document.addEventListener('focusout', this.blurHandler, true);
+  }
+
+  /**
    * Setup global mode detection via DOM observation
-   * This catches mode changes indicated by CSS classes on the body or editor
    */
   private setupGlobalModeDetection() {
     this.observer = new MutationObserver((mutations) => {
+      // Batch process mutations
+      let shouldDetect = false;
       for (const mutation of mutations) {
         if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
-          this.detectModeFromDOM(mutation.target as Element);
+          const target = mutation.target as Element;
+          if (target.closest('.cm-editor') || target === document.body) {
+            shouldDetect = true;
+            break;
+          }
         }
+      }
+      
+      if (shouldDetect) {
+        this.detectModeFromDOMDebounced();
       }
     });
 
-    // Observe body for class changes (some vim plugins add mode classes there)
     this.observer.observe(document.body, {
       attributes: true,
       attributeFilter: ['class'],
-      subtree: true,
+      subtree: false,
+    });
+  }
+
+  /**
+   * Debounced DOM mode detection
+   */
+  private detectModeFromDOMDebounced() {
+    if (this.detectModeScheduled) return;
+    this.detectModeScheduled = true;
+    
+    requestAnimationFrame(() => {
+      this.detectModeScheduled = false;
+      if (this.editorView) {
+        this.detectModeFromDOM(this.editorView.dom);
+      }
     });
   }
 
   /**
    * Detect vim mode from DOM classes
-   * Different vim plugins use different class naming conventions
+   * Optimized with early exit and cached class list
    */
   private detectModeFromDOM(element: Element) {
     const classList = element.classList;
     
-    // Check for common vim mode class patterns
-    const modePatterns: [RegExp | string, VimMode][] = [
-      [/vim-mode-normal/, 'normal'],
-      [/vim-mode-insert/, 'insert'],
-      [/vim-mode-visual/, 'visual'],
-      [/vim-mode-replace/, 'replace'],
-      [/vim-mode-command/, 'command'],
+    // Check string patterns first (faster)
+    const stringPatterns: [string, VimMode][] = [
       ['is-vim-mode-normal', 'normal'],
       ['is-vim-mode-insert', 'insert'],
       ['is-vim-mode-visual', 'visual'],
@@ -116,19 +216,28 @@ export class VimStateProvider {
       ['cm-vim-visual', 'visual'],
     ];
 
-    for (const [pattern, mode] of modePatterns) {
-      if (typeof pattern === 'string') {
-        if (classList.contains(pattern)) {
+    for (const [pattern, mode] of stringPatterns) {
+      if (classList.contains(pattern)) {
+        this.setMode(mode);
+        return;
+      }
+    }
+
+    // Check regex patterns (slower, do last)
+    const regexPatterns: [RegExp, VimMode][] = [
+      [/vim-mode-normal/, 'normal'],
+      [/vim-mode-insert/, 'insert'],
+      [/vim-mode-visual/, 'visual'],
+      [/vim-mode-replace/, 'replace'],
+      [/vim-mode-command/, 'command'],
+    ];
+
+    for (let i = 0; i < classList.length; i++) {
+      const cls = classList[i];
+      for (const [pattern, mode] of regexPatterns) {
+        if (pattern.test(cls)) {
           this.setMode(mode);
           return;
-        }
-      } else {
-        for (let i = 0; i < classList.length; i++) {
-          const cls = classList[i];
-          if (pattern.test(cls)) {
-            this.setMode(mode);
-            return;
-          }
         }
       }
     }
@@ -141,11 +250,9 @@ export class VimStateProvider {
     if (!this.editorView) return;
 
     try {
-      // Try to access CodeMirror vim state
       // @ts-expect-error - accessing internal vim state
       const cm = this.editorView.cm ?? this.editorView;
       
-      // Check for vim state in various locations
       // @ts-expect-error - accessing internal API
       const vimState = cm?.state?.vim ?? cm?.vim ?? this.editorView.state?.field?.(this.getVimStateField());
       
@@ -157,16 +264,8 @@ export class VimStateProvider {
         }
       }
 
-      // Fallback: check DOM classes on editor element
-      const editorDom = this.editorView.dom;
-      this.detectModeFromDOM(editorDom);
-      
-      // Also check parent elements
-      let parent = editorDom.parentElement;
-      while (parent && parent !== document.body) {
-        this.detectModeFromDOM(parent);
-        parent = parent.parentElement;
-      }
+      // Fallback: check DOM classes on editor element only
+      this.detectModeFromDOM(this.editorView.dom);
     } catch (e) {
       this.plugin.debug('Error detecting vim mode from editor:', e);
     }
@@ -176,7 +275,6 @@ export class VimStateProvider {
    * Try to get vim state field from CodeMirror extensions
    */
   private getVimStateField() {
-    // This is a placeholder - actual implementation depends on how vim mode is implemented
     return null;
   }
 
@@ -187,8 +285,6 @@ export class VimStateProvider {
     if (!vimState || typeof vimState !== 'object') return null;
 
     const state = vimState as Record<string, unknown>;
-    
-    // Different vim implementations store mode differently
     const modeValue = state.mode ?? state.currentMode ?? state.insertMode;
     
     if (typeof modeValue === 'string') {
@@ -200,7 +296,6 @@ export class VimStateProvider {
       if (normalizedMode.includes('normal')) return 'normal';
     }
     
-    // Check for insertMode boolean flag (common pattern)
     if (typeof state.insertMode === 'boolean') {
       return state.insertMode ? 'insert' : 'normal';
     }
@@ -212,16 +307,22 @@ export class VimStateProvider {
    * Setup listener for mode changes within the editor
    */
   private setupEditorModeListener() {
-    // Start polling for mode changes
-    // This is a fallback when event-based detection isn't available
     this.startPolling();
   }
 
+  /**
+   * Start polling for mode changes
+   * Only polls when editor is focused
+   */
   private startPolling() {
     this.stopPolling();
+    
     this.pollInterval = window.setInterval(() => {
-      this.detectModeFromEditor();
-    }, 100);
+      // Only poll if editor is focused - saves CPU when not actively editing
+      if (this.editorView && this.isEditorFocused) {
+        this.detectModeFromEditor();
+      }
+    }, this.pollIntervalMs);
   }
 
   private stopPolling() {
@@ -236,50 +337,40 @@ export class VimStateProvider {
    * Detects common vim mode-switching keys
    */
   private setupKeyboardDetection() {
+    // Pre-computed set for faster lookup
+    const insertModeKeys = new Set(['i', 'I', 'a', 'A', 'o', 'O', 's', 'S', 'c', 'C']);
+    const visualModeKeys = new Set(['v', 'V']);
+    
     this.keydownHandler = (e: KeyboardEvent) => {
-      // Only process if we have an active editor
       if (!this.editorView) return;
       
-      // Check if we're in an editor context
       const target = e.target as HTMLElement;
       if (!target.closest('.cm-editor')) return;
 
-      // Detect mode changes based on key presses
-      // Note: This is a heuristic and may not be 100% accurate
-      // It's meant to supplement DOM/state-based detection
-      
       const key = e.key;
-      const currentMode = this.currentMode;
 
-      // Escape key typically returns to normal mode
-      if (key === 'Escape') {
-        // Small delay to let vim plugins process the key first
-        setTimeout(() => this.detectModeFromEditor(), 10);
-        return;
-      }
-
-      // In normal mode, certain keys switch to insert mode
-      if (currentMode === 'normal') {
-        if (['i', 'I', 'a', 'A', 'o', 'O', 's', 'S', 'c', 'C'].includes(key) && !e.ctrlKey && !e.metaKey) {
-          // These keys typically enter insert mode
-          setTimeout(() => this.detectModeFromEditor(), 10);
-        } else if (key === 'v' && !e.ctrlKey && !e.metaKey) {
-          // v enters visual mode
-          setTimeout(() => this.detectModeFromEditor(), 10);
-        } else if (key === 'V' && !e.ctrlKey && !e.metaKey) {
-          // V enters visual line mode
-          setTimeout(() => this.detectModeFromEditor(), 10);
-        } else if (key === ':') {
-          // : enters command mode
-          setTimeout(() => this.detectModeFromEditor(), 10);
-        } else if (key === 'R' && !e.ctrlKey && !e.metaKey) {
-          // R enters replace mode
-          setTimeout(() => this.detectModeFromEditor(), 10);
+      // Debounce mode detection
+      if (this.detectModeScheduled) return;
+      this.detectModeScheduled = true;
+      
+      requestAnimationFrame(() => {
+        this.detectModeScheduled = false;
+        
+        // Escape key typically returns to normal mode
+        if (key === 'Escape') {
+          this.detectModeFromEditor();
+          return;
         }
-      }
+
+        // Only check mode-switching keys in normal mode
+        if (this.currentMode === 'normal' && !e.ctrlKey && !e.metaKey) {
+          if (insertModeKeys.has(key) || visualModeKeys.has(key) || key === ':' || key === 'R') {
+            this.detectModeFromEditor();
+          }
+        }
+      });
     };
 
     document.addEventListener('keydown', this.keydownHandler, true);
   }
 }
-

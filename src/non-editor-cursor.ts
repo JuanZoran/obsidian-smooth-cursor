@@ -1,26 +1,30 @@
 import type ObVidePlugin from './main';
 import type { VimMode, CursorPosition, CursorShape } from './types';
+import { calculateCursorDimensions } from './cursor-utils';
 
 /**
  * NonEditorCursor - Handles cursor styling in non-CodeMirror areas
  * (title bar, search boxes, etc.)
+ * Optimized with reusable measurement element
  */
 export class NonEditorCursor {
   private plugin: ObVidePlugin;
   private cursorEl: HTMLDivElement | null = null;
+  private measureSpan: HTMLSpanElement | null = null; // Reusable measurement element
   private activeInput: HTMLElement | null = null;
-  private observer: MutationObserver | null = null;
   private focusHandler: ((e: FocusEvent) => void) | null = null;
   private blurHandler: ((e: FocusEvent) => void) | null = null;
   private inputHandler: ((e: Event) => void) | null = null;
   private selectionHandler: (() => void) | null = null;
   private rafId: number | null = null;
   private isActive = false;
+  private lastMeasuredFont = '';
 
   constructor(plugin: ObVidePlugin) {
     this.plugin = plugin;
     this.setupEventListeners();
     this.createCursorElement();
+    this.createMeasureElement();
   }
 
   /**
@@ -31,6 +35,8 @@ export class NonEditorCursor {
     this.removeEventListeners();
     this.cursorEl?.remove();
     this.cursorEl = null;
+    this.measureSpan?.remove();
+    this.measureSpan = null;
   }
 
   private createCursorElement() {
@@ -49,8 +55,23 @@ export class NonEditorCursor {
     document.body.appendChild(this.cursorEl);
   }
 
+  /**
+   * Create reusable measurement element (avoids DOM churn)
+   */
+  private createMeasureElement() {
+    this.measureSpan = document.createElement('span');
+    this.measureSpan.style.cssText = `
+      position: absolute;
+      visibility: hidden;
+      white-space: pre;
+      pointer-events: none;
+      left: -9999px;
+      top: -9999px;
+    `;
+    document.body.appendChild(this.measureSpan);
+  }
+
   private setupEventListeners() {
-    // Focus handler for input elements
     this.focusHandler = (e: FocusEvent) => {
       const target = e.target as HTMLElement;
       if (this.isEditableElement(target) && !this.isCodeMirrorElement(target)) {
@@ -58,17 +79,14 @@ export class NonEditorCursor {
       }
     };
 
-    // Blur handler
     this.blurHandler = () => {
       this.stopTracking();
     };
 
-    // Input handler for cursor position updates
     this.inputHandler = () => {
       this.scheduleUpdate();
     };
 
-    // Selection change handler
     this.selectionHandler = () => {
       if (this.isActive) {
         this.scheduleUpdate();
@@ -93,17 +111,10 @@ export class NonEditorCursor {
   }
 
   private isEditableElement(el: HTMLElement): boolean {
-    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
-      return true;
-    }
-    if (el.contentEditable === 'true') {
-      return true;
-    }
-    return false;
+    return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.contentEditable === 'true';
   }
 
   private isCodeMirrorElement(el: HTMLElement): boolean {
-    // Check if element is inside a CodeMirror editor
     return el.closest('.cm-editor') !== null;
   }
 
@@ -115,19 +126,16 @@ export class NonEditorCursor {
     this.activeInput = element;
     this.isActive = true;
 
-    // Add input event listener
     if (this.inputHandler) {
       element.addEventListener('input', this.inputHandler);
       element.addEventListener('keyup', this.inputHandler);
     }
 
-    // Show cursor
     if (this.cursorEl) {
       this.cursorEl.style.display = 'block';
     }
 
     this.scheduleUpdate();
-    this.plugin.debug('NonEditorCursor: started tracking', element.tagName);
   }
 
   private stopTracking() {
@@ -184,43 +192,39 @@ export class NonEditorCursor {
     return null;
   }
 
+  /**
+   * Get cursor position in input/textarea using reusable measurement element
+   */
   private getInputCursorPosition(input: HTMLInputElement | HTMLTextAreaElement): CursorPosition | null {
+    if (!this.measureSpan) return null;
+    
     const selectionStart = input.selectionStart ?? 0;
+    const computedStyle = window.getComputedStyle(input);
+    const font = computedStyle.font;
     
-    // Create a temporary span to measure text width
-    const measureSpan = document.createElement('span');
-    measureSpan.style.cssText = `
-      position: absolute;
-      visibility: hidden;
-      white-space: pre;
-      font: ${window.getComputedStyle(input).font};
-    `;
+    // Only update font if changed (avoid triggering reflow)
+    if (font !== this.lastMeasuredFont) {
+      this.measureSpan.style.font = font;
+      this.lastMeasuredFont = font;
+    }
     
+    // Measure text before cursor
     const textBeforeCursor = input.value.substring(0, selectionStart);
-    measureSpan.textContent = textBeforeCursor || ' ';
-    document.body.appendChild(measureSpan);
+    this.measureSpan.textContent = textBeforeCursor || ' ';
+    const textWidth = this.measureSpan.offsetWidth;
     
-    const textWidth = measureSpan.offsetWidth;
-    
-    // Get character at cursor for width measurement
+    // Measure character at cursor
     const charAtCursor = input.value[selectionStart] || ' ';
-    measureSpan.textContent = charAtCursor;
-    const charWidth = measureSpan.offsetWidth;
-    
-    document.body.removeChild(measureSpan);
+    this.measureSpan.textContent = charAtCursor;
+    const charWidth = this.measureSpan.offsetWidth;
     
     // Get input element position
     const inputRect = input.getBoundingClientRect();
-    const computedStyle = window.getComputedStyle(input);
     const paddingLeft = parseFloat(computedStyle.paddingLeft) || 0;
     const paddingTop = parseFloat(computedStyle.paddingTop) || 0;
     const borderLeft = parseFloat(computedStyle.borderLeftWidth) || 0;
     const borderTop = parseFloat(computedStyle.borderTopWidth) || 0;
-    
-    // Calculate scroll offset for scrollable inputs
     const scrollLeft = input.scrollLeft || 0;
-    
-    // Get line height
     const lineHeight = parseFloat(computedStyle.lineHeight) || parseFloat(computedStyle.fontSize) * 1.2;
     
     return {
@@ -231,39 +235,44 @@ export class NonEditorCursor {
     };
   }
 
+  /**
+   * Get cursor position in contentEditable element
+   */
   private getContentEditableCursorPosition(): CursorPosition | null {
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return null;
 
     const range = selection.getRangeAt(0);
-    
-    // Get the bounding rect of the cursor position
     const rects = range.getClientRects();
+    
     if (rects.length === 0) {
-      // Fallback: create a temporary element at cursor position
-      const tempSpan = document.createElement('span');
-      tempSpan.textContent = '\u200B'; // Zero-width space
-      range.insertNode(tempSpan);
-      const rect = tempSpan.getBoundingClientRect();
-      tempSpan.remove();
-      
-      // Normalize the range after modification
-      if (selection.rangeCount > 0) {
-        const newRange = selection.getRangeAt(0);
-        newRange.collapse(true);
+      // Fallback: use range's bounding rect
+      const rangeRect = range.getBoundingClientRect();
+      if (rangeRect.width === 0 && rangeRect.height === 0) {
+        // Last resort: use parent element position
+        const container = range.commonAncestorContainer;
+        const parent = container.nodeType === Node.TEXT_NODE ? container.parentElement : container as HTMLElement;
+        if (parent) {
+          const parentRect = parent.getBoundingClientRect();
+          const style = window.getComputedStyle(parent);
+          const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2;
+          return {
+            x: parentRect.left,
+            y: parentRect.top,
+            width: 8,
+            height: lineHeight || 20,
+          };
+        }
       }
-      
       return {
-        x: rect.left,
-        y: rect.top,
+        x: rangeRect.left,
+        y: rangeRect.top,
         width: 8,
-        height: rect.height || 20,
+        height: rangeRect.height || 20,
       };
     }
 
     const rect = rects[0];
-    
-    // Try to get character width
     let charWidth = 8;
     if (!range.collapsed) {
       charWidth = rect.width;
@@ -280,30 +289,13 @@ export class NonEditorCursor {
   private applyCursorStyle(pos: CursorPosition, shape: CursorShape) {
     if (!this.cursorEl) return;
 
-    let width = pos.width;
-    let height = pos.height;
-    let x = pos.x;
-    let y = pos.y;
+    const { width, height, yOffset } = calculateCursorDimensions(pos, shape);
 
-    switch (shape) {
-      case 'line':
-        width = 2;
-        break;
-      case 'underline':
-        height = 2;
-        y = pos.y + pos.height - 2;
-        break;
-      case 'block':
-      default:
-        break;
-    }
-
-    this.cursorEl.style.left = `${x}px`;
-    this.cursorEl.style.top = `${y}px`;
+    this.cursorEl.style.left = `${pos.x}px`;
+    this.cursorEl.style.top = `${pos.y + yOffset}px`;
     this.cursorEl.style.width = `${width}px`;
     this.cursorEl.style.height = `${height}px`;
     this.cursorEl.style.backgroundColor = this.plugin.settings.cursorColor;
     this.cursorEl.style.opacity = String(this.plugin.settings.cursorOpacity);
   }
 }
-
