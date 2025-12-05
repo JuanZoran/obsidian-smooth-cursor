@@ -92,9 +92,8 @@ export class SmoothCursorSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('光标颜色')
       .setDesc('自定义光标的颜色')
-      .addText((text) =>
-        text
-          .setPlaceholder('#528bff')
+      .addColorPicker((colorPicker) =>
+        colorPicker
           .setValue(this.plugin.settings.cursorColor)
           .onChange(async (value) => {
             this.plugin.settings.cursorColor = value;
