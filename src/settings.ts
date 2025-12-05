@@ -203,19 +203,6 @@ export class SmoothCursorSettingTab extends PluginSettingTab {
         });
     }
 
-    // Non-editor support
-    new Setting(containerEl)
-      .setName('非编辑器区域支持')
-      .setDesc('在标题栏、搜索框等区域也启用自定义光标')
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.enableInNonEditor)
-          .onChange(async (value) => {
-            this.plugin.settings.enableInNonEditor = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
     // Debug mode
     new Setting(containerEl)
       .setName('调试模式')

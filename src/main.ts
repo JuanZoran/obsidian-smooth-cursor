@@ -4,7 +4,6 @@ import { SmoothCursorSettingTab } from './settings';
 import { VimStateProvider } from './vim-state';
 import { CursorRenderer } from './cursor-renderer';
 import { AnimationEngine } from './animation';
-import { NonEditorCursor } from './non-editor-cursor';
 import { DEFAULT_SETTINGS, type SmoothCursorSettings, type VimMode } from './types';
 import { StyleManager } from './core/style-manager';
 import { StatusBarManager } from './core/status-bar-manager';
@@ -15,7 +14,6 @@ export default class SmoothCursorPlugin extends Plugin {
   vimState: VimStateProvider | null = null;
   cursorRenderer: CursorRenderer | null = null;
   animationEngine: AnimationEngine | null = null;
-  private nonEditorCursor: NonEditorCursor | null = null;
   private activeEditorView: EditorView | null = null;
   
   // Managers
@@ -38,7 +36,6 @@ export default class SmoothCursorPlugin extends Plugin {
     this.vimState = new VimStateProvider(this);
     this.animationEngine = new AnimationEngine(this);
     this.cursorRenderer = new CursorRenderer(this, this.animationEngine);
-    this.nonEditorCursor = new NonEditorCursor(this);
     
     // Inject global styles
     this.styleManager.injectStyles(this.settings);
@@ -82,7 +79,6 @@ export default class SmoothCursorPlugin extends Plugin {
     this.cursorRenderer?.destroy();
     this.animationEngine?.stop();
     this.vimState?.destroy();
-    this.nonEditorCursor?.destroy();
     this.styleManager.removeStyles();
     this.statusBarManager.remove();
     this.debug('Smooth Cursor plugin unloaded');

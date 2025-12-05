@@ -49,7 +49,6 @@ export interface SmoothCursorSettings {
   cursorColor: string;
   cursorOpacity: number;
   cursorShapes: CursorShapeConfig;
-  enableInNonEditor: boolean;
   debug: boolean;
   
   // Insert mode (typing) animation settings
@@ -80,7 +79,6 @@ export const DEFAULT_SETTINGS: SmoothCursorSettings = {
     replace: 'underline',
     command: 'block',
   },
-  enableInNonEditor: true,
   debug: false,
   
   // Insert mode animation defaults
