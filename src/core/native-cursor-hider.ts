@@ -30,8 +30,6 @@ export class NativeCursorHider {
   detach(): void {
     this.isActive = false;
     
-    this.stopPeriodicCheck();
-    
     if (this.observer) {
       this.observer.disconnect();
       this.observer = null;
@@ -147,41 +145,16 @@ export class NativeCursorHider {
     });
 
     // Observe the entire editor DOM for changes
+    // MutationObserver with comprehensive configuration (childList, subtree, attributes)
+    // should catch all cursor element additions and class changes.
+    // Combined with CSS (.smooth-cursor-active) and immediate hide on attach,
+    // this provides complete coverage without needing periodic polling.
     this.observer.observe(this.editorView.dom, {
       childList: true,
       subtree: true,
       attributes: true,
       attributeFilter: ['class'],
     });
-    
-    // Low-frequency periodic check as a fallback (only if MutationObserver misses something)
-    // Reduced from 100ms to 2000ms since MutationObserver handles most cases
-    this.startPeriodicCheck();
-  }
-
-  /**
-   * Start low-frequency periodic check as a fallback
-   * MutationObserver handles most cases, this is just a safety net
-   */
-  private periodicCheckInterval: number | null = null;
-  
-  private startPeriodicCheck(): void {
-    this.stopPeriodicCheck();
-    
-    this.periodicCheckInterval = window.setInterval(() => {
-      if (this.isActive) {
-        this.hideNativeCursors();
-      } else {
-        this.stopPeriodicCheck();
-      }
-    }, 2000); // Check every 2000ms (reduced frequency since MutationObserver is primary)
-  }
-
-  private stopPeriodicCheck(): void {
-    if (this.periodicCheckInterval !== null) {
-      clearInterval(this.periodicCheckInterval);
-      this.periodicCheckInterval = null;
-    }
   }
 
   /**

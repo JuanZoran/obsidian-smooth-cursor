@@ -145,7 +145,10 @@ export class VimStateProvider {
     this.blurHandler = (e: FocusEvent) => {
       const target = e.target as HTMLElement;
       if (target.closest('.cm-editor')) {
-        // Small delay to check if focus moved to another part of editor
+        // Small delay (10ms) to check if focus moved to another part of editor
+        // This is necessary because focus events are asynchronous - the focusout event
+        // fires before the new focus target is actually focused. The delay allows
+        // us to check the actual focus state after the browser has updated it.
         setTimeout(() => {
           this.isEditorFocused = this.checkEditorFocused();
         }, 10);
@@ -187,6 +190,9 @@ export class VimStateProvider {
 
   /**
    * Debounced DOM mode detection
+   * Uses requestAnimationFrame for debouncing to ensure DOM is ready and avoid
+   * blocking the main thread. This is more efficient than setTimeout for DOM
+   * operations as it aligns with the browser's rendering cycle.
    */
   private detectModeFromDOMDebounced() {
     if (this.detectModeScheduled) return;

@@ -187,17 +187,16 @@ export class CursorRenderer {
   }
 
   /**
-   * Handle editor update from intercepted dispatch
+   * Unified handler for editor updates from different sources
+   * @param docChanged - Whether the document changed (typing)
+   * @param cursorPos - Current cursor position
    */
-  private handleEditorUpdate(tr: any) {
+  private handleEditorUpdateInternal(docChanged: boolean, cursorPos: number) {
     if (!this.editorView) return;
     
     const now = performance.now();
-    const state = this.editorView.state;
     
-    // Check if document changed (typing)
-    const docChanged = tr.docChanged || false;
-    
+    // Track if this is a typing action (document changed)
     if (docChanged) {
       this.lastDocChangeTime = now;
       this.isTyping = true;
@@ -217,9 +216,6 @@ export class CursorRenderer {
     }
     
     // Check if cursor position changed
-    const sel = state.selection.main;
-    const cursorPos = sel.head;
-    
     if (cursorPos !== this.lastCursorPos) {
       this.lastCursorPos = cursorPos;
       
@@ -232,45 +228,30 @@ export class CursorRenderer {
   }
 
   /**
+   * Handle editor update from intercepted dispatch
+   */
+  private handleEditorUpdate(tr: any) {
+    if (!this.editorView) return;
+    
+    const state = this.editorView.state;
+    const docChanged = tr.docChanged || false;
+    const sel = state.selection.main;
+    const cursorPos = sel.head;
+    
+    this.handleEditorUpdateInternal(docChanged, cursorPos);
+  }
+
+  /**
    * Handle editor update from ViewPlugin (if it works)
    */
   private handleEditorUpdateFromView(update: ViewUpdate) {
     if (!this.isAttached || !this.editorView) return;
     
-    const now = performance.now();
-    
-    // Track if this is a typing action (document changed)
-    if (update.docChanged) {
-      this.lastDocChangeTime = now;
-      this.isTyping = true;
-      this.lastUpdateWasTyping = true;
-      
-      // Clear existing typing timeout
-      if (this.typingTimeout !== null) {
-        clearTimeout(this.typingTimeout);
-      }
-      
-      // Set timeout to mark end of typing
-      this.typingTimeout = window.setTimeout(() => {
-        this.isTyping = false;
-      }, 150);
-    } else {
-      this.lastUpdateWasTyping = false;
-    }
-    
-    // Check if cursor position changed
+    const docChanged = update.docChanged;
     const sel = update.state.selection.main;
     const cursorPos = sel.head;
     
-    if (cursorPos !== this.lastCursorPos) {
-      this.lastCursorPos = cursorPos;
-      
-      // Clear coordinate cache on position change
-      this.coordinateService.clearCache();
-      
-      // Update cursor immediately with typing context
-      this.updateCursorPositionWithContext(this.lastUpdateWasTyping);
-    }
+    this.handleEditorUpdateInternal(docChanged, cursorPos);
   }
 
 
@@ -511,7 +492,10 @@ export class CursorRenderer {
       // Check if focus is leaving the editor
       const editorDom = this.editorView.dom;
       if (editorDom.contains(target) || editorDom === target) {
-        // Small delay to check if focus moved to another part of editor
+        // Small delay (10ms) to check if focus moved to another part of editor
+        // This is necessary because focus events are asynchronous - the focusout event
+        // fires before the new focus target is actually focused. The delay allows
+        // us to check the actual focus state after the browser has updated it.
         // Note: We keep smooth-cursor-active class even when blurred to prevent
         // native cursor flash when focus returns quickly
         setTimeout(() => {
