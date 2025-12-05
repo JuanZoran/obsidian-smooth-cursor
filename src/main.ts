@@ -270,7 +270,9 @@ export default class SmoothCursorPlugin extends Plugin {
   }
 
   private generateStyles(): string {
-    const { cursorColor, cursorOpacity } = this.settings;
+    const { cursorColor, cursorOpacity, animationDuration } = this.settings;
+    // Convert animation duration from ms to seconds for CSS
+    const transitionDuration = animationDuration / 1000;
     
     return `
       /* Hide native cursor when Smooth Cursor is active - CodeMirror 6 */
@@ -310,6 +312,7 @@ export default class SmoothCursorPlugin extends Plugin {
         border-radius: 1px;
         will-change: transform, width, height;
         transition: background-color 0.15s ease;
+        /* Note: width/height transitions removed - handled by JavaScript animation engine */
       }
 
       .smooth-cursor.block {

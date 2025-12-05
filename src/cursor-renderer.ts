@@ -177,6 +177,7 @@ export class CursorRenderer {
 
   /**
    * Update cursor position with typing context for animation optimization
+   * Ensures smooth dimension transitions when cursor shape changes
    */
   private updateCursorPositionWithContext(isTyping: boolean) {
     if (!this.editorView || !this.cursorEl || !this.cursorEl.isConnected) {
@@ -203,20 +204,33 @@ export class CursorRenderer {
         return;
       }
 
-      const targetPosition: CursorPosition = {
+      // Base position with character dimensions
+      const basePosition: CursorPosition = {
         x: coords.left,
         y: coords.top,
         width: charWidth,
         height: lineHeight,
       };
 
-      if (isNaN(targetPosition.x) || isNaN(targetPosition.y)) {
+      if (isNaN(basePosition.x) || isNaN(basePosition.y)) {
         this.hideCursor();
         return;
       }
 
       if (this.cursorEl) {
         this.showCursor();
+        
+        // Get current shape to calculate target dimensions
+        const shape = (this.cursorEl.dataset.shape || 'block') as CursorShape;
+        const { width: targetWidth, height: targetHeight } = calculateCursorDimensions(basePosition, shape);
+        
+        // Create target position with shape-adjusted dimensions for smooth animation
+        const targetPosition: CursorPosition = {
+          x: basePosition.x,
+          y: basePosition.y,
+          width: targetWidth,
+          height: targetHeight,
+        };
         
         if (this.isScrolling) {
           // Use immediate positioning during scroll
@@ -229,8 +243,8 @@ export class CursorRenderer {
             this.cursorEl.style.left = `${targetPosition.x}px`;
             this.cursorEl.style.top = `${targetPosition.y}px`;
           }
-          this.cursorEl.style.width = `${targetPosition.width}px`;
-          this.cursorEl.style.height = `${targetPosition.height}px`;
+          this.cursorEl.style.width = `${targetWidth}px`;
+          this.cursorEl.style.height = `${targetHeight}px`;
           this.animationEngine.setImmediate(targetPosition);
         } else {
           const currentLeft = parseFloat(this.cursorEl.style.left || '0');
@@ -243,6 +257,7 @@ export class CursorRenderer {
             this.applyCursorPosition(targetPosition);
           } else {
             // Pass typing context to animation engine for adaptive lerp
+            // Animation engine will smoothly interpolate dimensions
             this.animationEngine.animateTo(targetPosition, isTyping);
           }
         }
@@ -819,15 +834,66 @@ export class CursorRenderer {
 
   /**
    * Update cursor shape based on vim mode
+   * Ensures smooth transition of dimensions when shape changes
    */
   private updateCursorShape(mode: VimMode) {
     if (!this.cursorEl) return;
 
     const shape = this.plugin.settings.cursorShapes[mode];
+    const oldShape = (this.cursorEl.dataset.shape || 'block') as CursorShape;
+    
+    // If shape is changing, ensure smooth transition
+    if (oldShape !== shape && this.animationEngine && this.editorView) {
+      // Get current position from animation engine
+      const currentPos = this.animationEngine.getCurrentPosition();
+      
+      // Read actual displayed dimensions from DOM (most accurate)
+      const displayedWidth = parseFloat(this.cursorEl.style.width || '0');
+      const displayedHeight = parseFloat(this.cursorEl.style.height || '0');
+      
+      // If we have valid displayed dimensions, use them as the starting point
+      // Otherwise, calculate from current animation state based on old shape
+      let startWidth = currentPos.width;
+      let startHeight = currentPos.height;
+      
+      if (displayedWidth > 0 && displayedHeight > 0) {
+        // Use actual displayed dimensions
+        startWidth = displayedWidth;
+        startHeight = displayedHeight;
+      } else {
+        // Calculate displayed dimensions from animation state based on old shape
+        const currentDisplayedDims = calculateCursorDimensions(currentPos, oldShape);
+        startWidth = currentDisplayedDims.width;
+        startHeight = currentDisplayedDims.height;
+      }
+      
+      // Update animation engine's current state to match displayed dimensions
+      // This ensures smooth transition from old shape to new shape
+      const currentDisplayedPos: CursorPosition = {
+        x: currentPos.x,
+        y: currentPos.y,
+        width: startWidth,
+        height: startHeight,
+      };
+      
+      // Update animation engine's current state to match displayed dimensions
+      this.animationEngine.setImmediate(currentDisplayedPos);
+      
+      // Update shape attribute
+      this.cursorEl.dataset.shape = shape;
+      
+      // Trigger update which will calculate new dimensions based on new shape
+      // The animation engine will smoothly interpolate from current displayed dimensions to new ones
+      requestAnimationFrame(() => {
+        this.forceUpdate();
+      });
+    } else {
+      // Shape not changing, just update attributes
+      this.cursorEl.dataset.shape = shape;
+    }
     
     this.cursorEl.style.display = 'block';
     this.cursorEl.style.visibility = 'visible';
-    this.cursorEl.dataset.shape = shape;
     
     if (mode === 'insert') {
       this.cursorEl.style.animation = 'smooth-cursor-blink 1s ease-in-out infinite';
@@ -835,20 +901,31 @@ export class CursorRenderer {
       this.cursorEl.style.animation = 'none';
     }
 
-    requestAnimationFrame(() => {
-      this.forceUpdate();
-    });
+    // Always trigger update to ensure dimensions are recalculated
+    if (oldShape === shape) {
+      requestAnimationFrame(() => {
+        this.forceUpdate();
+      });
+    }
   }
 
   /**
    * Apply cursor position from animation
    * Uses either transform (GPU-accelerated) or left/top based on settings
+   * The position passed here already has shape-adjusted dimensions for smooth transitions
    */
   private applyCursorPosition(pos: CursorPosition) {
     if (!this.cursorEl) return;
 
     const shape = (this.cursorEl.dataset.shape || 'block') as CursorShape;
-    const { width, height, yOffset } = calculateCursorDimensions(pos, shape);
+    
+    // Calculate yOffset based on shape (for underline cursor)
+    // For underline, we need the original line height to calculate offset
+    let yOffset = 0;
+    if (shape === 'underline' && this.editorView) {
+      const originalLineHeight = this.editorView.defaultLineHeight;
+      yOffset = originalLineHeight - pos.height; // pos.height is 2 for underline
+    }
 
     // Check if transform animation mode is enabled
     if (this.plugin.settings.useTransformAnimation) {
@@ -863,8 +940,9 @@ export class CursorRenderer {
       this.cursorEl.style.top = `${pos.y + yOffset}px`;
     }
     
-    this.cursorEl.style.width = `${width}px`;
-    this.cursorEl.style.height = `${height}px`;
+    // Use dimensions directly from animation engine (already shape-adjusted)
+    this.cursorEl.style.width = `${pos.width}px`;
+    this.cursorEl.style.height = `${pos.height}px`;
   }
 
   /**

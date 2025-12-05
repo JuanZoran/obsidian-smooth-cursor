@@ -100,16 +100,22 @@ export class AnimationEngine {
     const dx = target.x - this.currentPos.x;
     const dy = target.y - this.currentPos.y;
     const distanceSquared = dx * dx + dy * dy;
+    
+    // Calculate dimension differences to detect shape changes
+    const dw = target.width - this.currentPos.width;
+    const dh = target.height - this.currentPos.height;
+    const dimensionDeltaSquared = dw * dw + dh * dh;
 
-    // If very close, just jump (threshold: 2^2 = 4)
-    if (distanceSquared < 4) {
+    // If very close in both position and dimensions, just jump (threshold: 2^2 = 4 for position, 0.1^2 = 0.01 for dimensions)
+    // But if dimensions are changing (shape change), always animate for smooth transition
+    if (distanceSquared < 4 && dimensionDeltaSquared < 0.01) {
       this.setPositionDirect(target);
       return;
     }
 
     // For typing, we want smooth animation even for rapid movements
-    // Only skip animation for rapid movements when NOT typing
-    if (!isTyping && timeSinceLastUpdate < 50 && distanceSquared < 10000) {
+    // Only skip animation for rapid movements when NOT typing and dimensions aren't changing
+    if (!isTyping && timeSinceLastUpdate < 50 && distanceSquared < 10000 && dimensionDeltaSquared < 0.01) {
       this.setPositionDirect(target);
       return;
     }
@@ -227,12 +233,21 @@ export class AnimationEngine {
     // Notify callback
     this.onFrameCallback?.(this.currentPos);
 
-    // Check if we're close enough to target (squared distance, threshold: 0.5^2 = 0.25)
+    // Check if we're close enough to target
+    // Check both position and dimensions to ensure smooth shape transitions
     const dx = this.targetPos.x - this.currentPos.x;
     const dy = this.targetPos.y - this.currentPos.y;
+    const dw = this.targetPos.width - this.currentPos.width;
+    const dh = this.targetPos.height - this.currentPos.height;
     const distanceSquared = dx * dx + dy * dy;
+    const dimensionDeltaSquared = dw * dw + dh * dh;
+    
+    // Threshold for position: 0.5^2 = 0.25
+    // Threshold for dimensions: 0.1^2 = 0.01 (smaller threshold for smoother dimension transitions)
+    const positionThreshold = 0.25;
+    const dimensionThreshold = 0.01;
 
-    if (distanceSquared < 0.25) {
+    if (distanceSquared < positionThreshold && dimensionDeltaSquared < dimensionThreshold) {
       // Snap to target and stop
       this.currentPos.x = this.targetPos.x;
       this.currentPos.y = this.targetPos.y;
