@@ -1,7 +1,7 @@
 {
 	"id": "smooth-cursor",
 	"name": "Smooth Cursor",
-	"version": "1.2.2",
+	"version": "1.2.3",
 	"minAppVersion": "1.6.0",
 	"description": "为Obsidian实现平滑光标动画效果",
 	"author": "Zoran",

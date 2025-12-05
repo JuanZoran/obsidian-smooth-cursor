@@ -21,7 +21,10 @@ export class EditorStateManager {
     this.editorView = editorView;
     this.cachedIsFocused = isEditorFocused(editorView);
     this.cachedEditorHasActiveClass = false;
-    this.ensureHealth();
+    // Immediately add smooth-cursor-active class when attaching
+    // This ensures native cursor is always hidden while editor is attached
+    this.setEditorActiveClass(true);
+    this.cachedEditorHasActiveClass = true;
   }
 
   /**
@@ -86,6 +89,9 @@ export class EditorStateManager {
         if (!hasClass(this.editorView.dom, 'smooth-cursor-active')) {
           addClass(this.editorView.dom, 'smooth-cursor-active');
           this.cachedEditorHasActiveClass = true;
+          // Force a synchronous reflow to ensure CSS is applied immediately
+          // This prevents native cursor flash during focus transitions
+          void this.editorView.dom.offsetHeight;
         }
       } else {
         if (hasClass(this.editorView.dom, 'smooth-cursor-active')) {

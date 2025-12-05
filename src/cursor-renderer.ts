@@ -8,6 +8,7 @@ import { CharacterMeasurementService } from './services/character-measurement-se
 import { CursorElementManager } from './core/cursor-element-manager';
 import { EditorStateManager } from './core/editor-state-manager';
 import { EventManager } from './core/event-manager';
+import { NativeCursorHider } from './core/native-cursor-hider';
 import { getDefaultLineHeight } from './utils/editor-utils';
 import { isElementConnected } from './utils/dom-utils';
 
@@ -51,6 +52,7 @@ export class CursorRenderer {
   private cursorElementManager: CursorElementManager;
   private editorStateManager: EditorStateManager;
   private eventManager: EventManager;
+  private nativeCursorHider: NativeCursorHider;
   
   // Transaction-based cursor tracking
   private cursorUpdatePlugin: ReturnType<typeof createCursorUpdatePlugin> | null = null;
@@ -74,6 +76,7 @@ export class CursorRenderer {
     this.cursorElementManager = new CursorElementManager(plugin.settings);
     this.editorStateManager = new EditorStateManager();
     this.eventManager = new EventManager();
+    this.nativeCursorHider = new NativeCursorHider();
     
     // Set up animation frame callback
     this.animationEngine.setOnFrame((pos) => this.applyCursorPosition(pos));
@@ -103,6 +106,7 @@ export class CursorRenderer {
     this.coordinateService.attach(editorView);
     this.characterMeasurementService.attach(editorView);
     this.editorStateManager.attach(editorView);
+    this.nativeCursorHider.attach(editorView);
     
     // Create cursor elements
     const editorId = CursorElementManager.generateEditorId();
@@ -119,20 +123,21 @@ export class CursorRenderer {
     
     this.isAttached = true;
     
-    // Force initial health check and class setup
-    this.editorStateManager.ensureHealth(true);
+    // smooth-cursor-active class is already added by editorStateManager.attach()
+    // which ensures native cursor is always hidden while editor is attached
+    // This prevents native cursor flash when focus switches between editor and non-editor areas
     
     // Setup cursor position tracking (optimized polling as fallback)
     this.setupCursorTracking();
     
     this.plugin.debug('CursorRenderer attached');
     
-    // Initial cursor position update
-    requestAnimationFrame(() => {
-      if (this.isAttached && this.editorView) {
-        this.scheduleUpdate();
-      }
-    });
+    // Initial cursor position update - use immediate update to prevent native cursor flash
+    if (this.editorView) {
+      this.updatePositionImmediate();
+      // Also schedule a normal update for smooth animation after immediate positioning
+      this.scheduleUpdate();
+    }
   }
 
   /**
@@ -329,10 +334,18 @@ export class CursorRenderer {
       // Check if focus is entering the editor
       const editorDom = this.editorView.dom;
       if (editorDom.contains(target) || editorDom === target) {
-        // Immediately add smooth-cursor-active class to hide native cursor
-        this.editorStateManager.ensureHealth(true);
+        // Ensure smooth-cursor-active class is present (should already be there from attach)
+        // Force immediate application to prevent any native cursor flash
+        this.editorStateManager.setEditorActiveClass(true);
         
-        // Immediately update cursor position
+        // Force hide native cursors immediately (direct DOM manipulation)
+        this.nativeCursorHider.forceHide();
+        
+        // Immediately update cursor position synchronously to prevent native cursor flash
+        // Use immediate update instead of scheduleUpdate to avoid requestAnimationFrame delay
+        this.updatePositionImmediate();
+        
+        // Also schedule a normal update for smooth animation after immediate positioning
         this.scheduleUpdate();
         
         this.plugin.debug('Focus returned to editor, cursor updated immediately');
@@ -347,11 +360,15 @@ export class CursorRenderer {
       const editorDom = this.editorView.dom;
       if (editorDom.contains(target) || editorDom === target) {
         // Small delay to check if focus moved to another part of editor
+        // Note: We keep smooth-cursor-active class even when blurred to prevent
+        // native cursor flash when focus returns quickly
         setTimeout(() => {
           if (this.editorView) {
             const isStillFocused = this.editorStateManager.isFocused(true);
             
             if (!isStillFocused) {
+              // Hide custom cursor but keep smooth-cursor-active class
+              // This ensures native cursor stays hidden when focus returns
               this.cursorElementManager.hide();
             }
           }
@@ -359,7 +376,22 @@ export class CursorRenderer {
       }
     };
 
-    // Use capture phase to catch focus events early
+    // Also listen to mousedown to add class before focus event
+    // This prevents native cursor flash when clicking to focus editor
+    const mousedownHandler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target || !this.editorView) return;
+
+      const editorDom = this.editorView.dom;
+      if (editorDom.contains(target) || editorDom === target) {
+        // Add class immediately on mousedown, before focus event
+        // This ensures native cursor is hidden before browser renders focus state
+        this.editorStateManager.setEditorActiveClass(true);
+      }
+    };
+
+    // Use capture phase to catch events early
+    this.eventManager.addEventListener(document, 'mousedown', mousedownHandler, true);
     this.eventManager.addEventListener(document, 'focusin', focusHandler, true);
     this.eventManager.addEventListener(document, 'focusout', blurHandler, true);
   }
@@ -458,6 +490,7 @@ export class CursorRenderer {
     this.coordinateService.detach();
     this.characterMeasurementService.detach();
     this.editorStateManager.detach();
+    this.nativeCursorHider.detach();
     
     this.editorView = null;
     this.isAttached = false;
