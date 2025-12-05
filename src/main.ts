@@ -6,7 +6,6 @@ import { CursorRenderer } from './cursor-renderer';
 import { AnimationEngine } from './animation';
 import { DEFAULT_SETTINGS, type SmoothCursorSettings, type VimMode } from './types';
 import { StyleManager } from './core/style-manager';
-import { StatusBarManager } from './core/status-bar-manager';
 import { DiagnosticService } from './services/diagnostic-service';
 
 export default class SmoothCursorPlugin extends Plugin {
@@ -15,10 +14,10 @@ export default class SmoothCursorPlugin extends Plugin {
   cursorRenderer: CursorRenderer | null = null;
   animationEngine: AnimationEngine | null = null;
   private activeEditorView: EditorView | null = null;
+  private currentCodeMirrorEditor: any = null; // CodeMirror 5 editor instance for vim-mode-change event
   
   // Managers
   private styleManager: StyleManager;
-  private statusBarManager: StatusBarManager;
   private diagnosticService: DiagnosticService;
 
   async onload() {
@@ -26,7 +25,6 @@ export default class SmoothCursorPlugin extends Plugin {
     
     // Initialize managers
     this.styleManager = new StyleManager();
-    this.statusBarManager = new StatusBarManager(this);
     this.diagnosticService = new DiagnosticService(this);
     
     // Add settings tab
@@ -39,9 +37,6 @@ export default class SmoothCursorPlugin extends Plugin {
     
     // Inject global styles
     this.styleManager.injectStyles(this.settings);
-    
-    // Add status bar item (for debug mode)
-    this.statusBarManager.setup();
     
     // Register workspace events
     this.registerEvent(
@@ -76,11 +71,20 @@ export default class SmoothCursorPlugin extends Plugin {
   }
 
   onunload() {
+    // Clean up vim-mode-change event listener
+    if (this.currentCodeMirrorEditor && this.vimState) {
+      try {
+        this.currentCodeMirrorEditor.off('vim-mode-change', this.vimState.onVimModeChanged);
+      } catch (e) {
+        this.debug('Error removing vim-mode-change listener on unload:', e);
+      }
+      this.currentCodeMirrorEditor = null;
+    }
+    
     this.cursorRenderer?.destroy();
     this.animationEngine?.stop();
     this.vimState?.destroy();
     this.styleManager.removeStyles();
-    this.statusBarManager.remove();
     this.debug('Smooth Cursor plugin unloaded');
   }
 
@@ -130,6 +134,16 @@ export default class SmoothCursorPlugin extends Plugin {
   }
 
   private onActiveLeafChange(leaf: WorkspaceLeaf | null) {
+    // Clean up previous vim-mode-change event listener
+    if (this.currentCodeMirrorEditor && this.vimState) {
+      try {
+        this.currentCodeMirrorEditor.off('vim-mode-change', this.vimState.onVimModeChanged);
+      } catch (e) {
+        this.debug('Error removing vim-mode-change listener:', e);
+      }
+      this.currentCodeMirrorEditor = null;
+    }
+
     if (!leaf) {
       this.activeEditorView = null;
       this.cursorRenderer?.detach();
@@ -142,10 +156,33 @@ export default class SmoothCursorPlugin extends Plugin {
       // @ts-expect-error - accessing internal API
       const editorView = view.editor?.cm as EditorView | undefined;
       
+      // Get CodeMirror 5 editor instance for vim-mode-change event
+      // For CM6 this actually returns an instance of the object named CodeMirror from cm_adapter of codemirror_vim
+      // accessing internal API
+      const codeMirrorEditor = (view as any).sourceMode?.cmEditor?.cm?.cm;
+      
       if (editorView) {
         this.activeEditorView = editorView;
         this.cursorRenderer?.attach(editorView);
         this.vimState?.attach(editorView);
+        
+        // Set up vim-mode-change event listener on CodeMirror 5 editor
+        if (codeMirrorEditor && this.vimState) {
+          try {
+            // Remove any existing listener first (in case it wasn't cleaned up)
+            codeMirrorEditor.off('vim-mode-change', this.vimState.onVimModeChanged);
+            // Add new listener
+            codeMirrorEditor.on('vim-mode-change', this.vimState.onVimModeChanged);
+            this.currentCodeMirrorEditor = codeMirrorEditor;
+            this.debug('Attached vim-mode-change event listener to editor');
+          } catch (e) {
+            this.debug('Error setting up vim-mode-change listener:', e);
+            // Fallback to existing detection methods if event listener fails
+          }
+        } else {
+          this.debug('CodeMirror editor not found, using DOM detection only');
+        }
+        
         this.debug('Attached to editor view');
       }
     } else {
