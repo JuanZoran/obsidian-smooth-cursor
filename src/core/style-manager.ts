@@ -135,6 +135,17 @@ export class StyleManager {
         animation: none !important;
         opacity: var(--smooth-cursor-opacity, ${cursorOpacity}) !important;
       }
+
+      /* Non-editor cursor styles */
+      /* Breathing animation is disabled for non-editor cursors to prevent flickering */
+      .smooth-cursor-non-editor {
+        position: absolute;
+        pointer-events: none;
+        z-index: 1000;
+        background-color: ${cursorColor};
+        opacity: ${cursorOpacity};
+        animation: none !important;
+      }
     `;
   }
 }
