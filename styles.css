@@ -8,7 +8,7 @@
   transition-timing-function: cubic-bezier(0.25, 0.1, 0.25, 1);
 }
 
-/* Pause blink animation while cursor is moving */
+/* Pause animation while cursor is moving */
 .smooth-cursor.moving {
   animation: none !important;
   opacity: var(--smooth-cursor-opacity, 0.8) !important;

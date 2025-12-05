@@ -30,6 +30,43 @@ export class AnimationEngine {
   
   // Movement callback for blink pause integration
   private onMovementCallback: ((isMoving: boolean) => void) | null = null;
+  private movementStateTimeout: number | null = null;
+  private isMovementActive = false;
+  private movementStateDebounceDelay = 250; // Delay before notifying movement stopped (ms) - allows animation to complete
+  
+  /**
+   * Notify that movement has started
+   */
+  private notifyMovementStarted() {
+    if (!this.isMovementActive) {
+      this.isMovementActive = true;
+      this.onMovementCallback?.(true);
+    }
+    // Clear any pending stop notification
+    if (this.movementStateTimeout !== null) {
+      clearTimeout(this.movementStateTimeout);
+      this.movementStateTimeout = null;
+    }
+  }
+  
+  /**
+   * Schedule notification that movement has stopped (with debounce)
+   */
+  private scheduleMovementStopped() {
+    // Clear any existing timeout
+    if (this.movementStateTimeout !== null) {
+      clearTimeout(this.movementStateTimeout);
+    }
+    
+    // Schedule stop notification after debounce delay
+    this.movementStateTimeout = window.setTimeout(() => {
+      this.movementStateTimeout = null;
+      if (this.isMovementActive) {
+        this.isMovementActive = false;
+        this.onMovementCallback?.(false);
+      }
+    }, this.movementStateDebounceDelay);
+  }
 
   constructor(plugin: SmoothCursorPlugin) {
     this.plugin = plugin;
@@ -86,13 +123,19 @@ export class AnimationEngine {
 
     // If animation is disabled, jump directly
     if (!enableAnimation) {
+      // Notify movement state even when animation is disabled to pause breathing animation
+      this.notifyMovementStarted();
       this.setPositionDirect(target);
+      this.scheduleMovementStopped();
       return;
     }
     
     // If insert mode animation is disabled and we're typing, jump directly
     if (isTyping && enableInsertModeAnimation === false) {
+      // Notify movement state to pause breathing animation
+      this.notifyMovementStarted();
       this.setPositionDirect(target);
+      this.scheduleMovementStopped();
       return;
     }
 
@@ -108,17 +151,17 @@ export class AnimationEngine {
 
     // If very close in both position and dimensions, just jump (threshold: 2^2 = 4 for position, 0.1^2 = 0.01 for dimensions)
     // But if dimensions are changing (shape change), always animate for smooth transition
-    if (distanceSquared < 4 && dimensionDeltaSquared < 0.01) {
-      this.setPositionDirect(target);
-      return;
-    }
+    // Note: We still animate even for very short movements to provide smooth transitions
+    // The threshold check is removed to ensure all movements get smooth animation
+    // if (distanceSquared < 4 && dimensionDeltaSquared < 0.01) {
+    //   this.setPositionDirect(target);
+    //   return;
+    // }
 
     // For typing, we want smooth animation even for rapid movements
-    // Only skip animation for rapid movements when NOT typing and dimensions aren't changing
-    if (!isTyping && timeSinceLastUpdate < 50 && distanceSquared < 10000 && dimensionDeltaSquared < 0.01) {
-      this.setPositionDirect(target);
-      return;
-    }
+    // For all movements (including rapid), we animate smoothly
+    // Movement state tracking will handle pausing breathing animation during movement
+    // Removed the skip-animation check to ensure all movements get smooth transitions
 
     // Update target position (avoid spread operator)
     this.targetPos.x = target.x;
@@ -132,8 +175,8 @@ export class AnimationEngine {
     // Update lerp factor if settings changed
     this.updateLerpFactor();
     
-    // Notify movement callback (for blink pause)
-    this.onMovementCallback?.(true);
+    // Notify movement started (for breathing animation pause)
+    this.notifyMovementStarted();
     
     // Start animation if not already running
     if (!this.isAnimating) {
@@ -201,6 +244,8 @@ export class AnimationEngine {
     }
     this.isAnimating = false;
     this.isStopped = true;
+    // Schedule notification that movement has stopped (with debounce)
+    this.scheduleMovementStopped();
   }
 
   private startAnimationLoop() {
@@ -214,8 +259,8 @@ export class AnimationEngine {
     // Early exit checks
     if (!this.isAnimating || this.isStopped) {
       this.rafId = null;
-      // Notify that movement has stopped
-      this.onMovementCallback?.(false);
+      // Schedule notification that movement has stopped (with debounce)
+      this.scheduleMovementStopped();
       return;
     }
 
@@ -257,8 +302,8 @@ export class AnimationEngine {
       this.isAnimating = false;
       this.isCurrentlyTyping = false;
       this.rafId = null;
-      // Notify that movement has stopped
-      this.onMovementCallback?.(false);
+      // Schedule notification that movement has stopped (with debounce)
+      this.scheduleMovementStopped();
     } else {
       // Continue animation
       this.rafId = requestAnimationFrame(() => this.animate());

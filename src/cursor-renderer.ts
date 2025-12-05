@@ -63,6 +63,11 @@ export class CursorRenderer {
   private isTyping = false;
   private typingTimeout: number | null = null;
   private lastUpdateWasTyping = false;
+  
+  // Movement debounce for breathing animation
+  private movementResumeTimeout: number | null = null;
+  private movementDebounceDelay = 300; // Delay before resuming animation after movement stops (ms) - reduced to match animation engine
+  private isCurrentlyMoving = false; // Track if cursor is currently moving
 
   constructor(plugin: SmoothCursorPlugin, animationEngine: AnimationEngine) {
     this.plugin = plugin;
@@ -377,6 +382,16 @@ export class CursorRenderer {
       clearTimeout(this.typingTimeout);
       this.typingTimeout = null;
     }
+    if (this.movementResumeTimeout !== null) {
+      clearTimeout(this.movementResumeTimeout);
+      this.movementResumeTimeout = null;
+    }
+    
+    // Remove moving class to ensure clean state
+    if (this.cursorEl) {
+      this.cursorEl.classList.remove('moving');
+    }
+    this.isCurrentlyMoving = false;
     
     this.hideCursor();
     
@@ -426,6 +441,10 @@ export class CursorRenderer {
       clearTimeout(this.typingTimeout);
       this.typingTimeout = null;
     }
+    if (this.movementResumeTimeout !== null) {
+      clearTimeout(this.movementResumeTimeout);
+      this.movementResumeTimeout = null;
+    }
     this.detach();
     this.charWidthCache.clear();
   }
@@ -436,6 +455,10 @@ export class CursorRenderer {
   forceUpdate() {
     this.lastCursorPos = -1;
     this.coordsCache.clear(); // Clear cache on force update
+    // Also update shape/animation to apply any setting changes
+    if (this.cursorEl && this.editorView) {
+      this.updateCursorShape(this.plugin.getVimMode());
+    }
     this.scheduleUpdate();
   }
 
@@ -467,10 +490,11 @@ export class CursorRenderer {
       pointer-events: none !important;
       z-index: 10000 !important;
       background-color: ${this.plugin.settings.cursorColor} !important;
-      opacity: ${this.plugin.settings.cursorOpacity} !important;
       border-radius: 1px;
       --smooth-cursor-opacity: ${this.plugin.settings.cursorOpacity};
     `;
+    // Set initial opacity without !important to allow animation to override
+    this.cursorEl.style.opacity = String(this.plugin.settings.cursorOpacity);
     
     this.updateCursorShape(this.plugin.getVimMode());
     document.body.appendChild(this.cursorEl);
@@ -884,9 +908,8 @@ export class CursorRenderer {
       
       // Trigger update which will calculate new dimensions based on new shape
       // The animation engine will smoothly interpolate from current displayed dimensions to new ones
-      requestAnimationFrame(() => {
-        this.forceUpdate();
-      });
+      // Use scheduleUpdate instead of forceUpdate to avoid recursive calls
+      this.scheduleUpdate();
     } else {
       // Shape not changing, just update attributes
       this.cursorEl.dataset.shape = shape;
@@ -895,18 +918,31 @@ export class CursorRenderer {
     this.cursorEl.style.display = 'block';
     this.cursorEl.style.visibility = 'visible';
     
-    if (mode === 'insert') {
-      this.cursorEl.style.animation = 'smooth-cursor-blink 1s ease-in-out infinite';
+    // Apply breathing animation if enabled (works in all modes)
+    if (this.plugin.settings.enableBreathingAnimation) {
+      this.cursorEl.classList.add('breathing');
+      // Clear any inline animation style to allow CSS animation to work
+      this.cursorEl.style.animation = '';
+      // Clear inline opacity to allow animation to control opacity (only if not moving)
+      // The movement state handler will manage the moving class and opacity during actual movement
+      if (!this.isCurrentlyMoving) {
+        this.cursorEl.style.opacity = '';
+        // Ensure moving class is removed if we're not actually moving
+        // This fixes cases where .moving class might be left over from previous state
+        this.cursorEl.classList.remove('moving');
+      }
     } else {
+      this.cursorEl.classList.remove('breathing');
       this.cursorEl.style.animation = 'none';
+      // Restore static opacity when animation is disabled
+      this.cursorEl.style.opacity = String(this.plugin.settings.cursorOpacity);
+      // Remove moving class when breathing animation is disabled
+      this.cursorEl.classList.remove('moving');
+      this.isCurrentlyMoving = false;
     }
 
-    // Always trigger update to ensure dimensions are recalculated
-    if (oldShape === shape) {
-      requestAnimationFrame(() => {
-        this.forceUpdate();
-      });
-    }
+    // Note: Removed recursive forceUpdate call to prevent state switching issues
+    // Dimensions will be recalculated on next position update
   }
 
   /**
@@ -946,18 +982,40 @@ export class CursorRenderer {
   }
 
   /**
-   * Handle movement state changes for blink pause
-   * Pauses blink animation while cursor is moving, resumes when stopped
+   * Handle movement state changes for breathing animation pause
+   * Pauses breathing animation while cursor is moving, resumes after debounce when stopped
    */
   private handleMovementState(isMoving: boolean) {
     if (!this.cursorEl) return;
     
+    // Clear any pending resume timeout
+    if (this.movementResumeTimeout !== null) {
+      clearTimeout(this.movementResumeTimeout);
+      this.movementResumeTimeout = null;
+    }
+    
     if (isMoving) {
-      // Pause blink by adding 'moving' class
+      // Immediately pause animation and keep cursor fully visible
+      this.isCurrentlyMoving = true;
+      // The .moving class in CSS will handle opacity via CSS variable
       this.cursorEl.classList.add('moving');
+      // Force opacity to full to override any animation state
+      if (this.plugin.settings.enableBreathingAnimation) {
+        this.cursorEl.style.opacity = String(this.plugin.settings.cursorOpacity);
+      }
     } else {
-      // Resume blink by removing 'moving' class
-      this.cursorEl.classList.remove('moving');
+      // Debounce: wait before resuming animation to avoid flickering
+      // This prevents animation from restarting too quickly if movement resumes
+      this.movementResumeTimeout = window.setTimeout(() => {
+        this.movementResumeTimeout = null;
+        this.isCurrentlyMoving = false;
+        // Resume animation by removing 'moving' class
+        this.cursorEl?.classList.remove('moving');
+        // Clear inline opacity to allow animation to control it
+        if (this.plugin.settings.enableBreathingAnimation && this.cursorEl) {
+          this.cursorEl.style.opacity = '';
+        }
+      }, this.movementDebounceDelay);
     }
   }
 }

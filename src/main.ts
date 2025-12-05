@@ -183,6 +183,13 @@ export default class SmoothCursorPlugin extends Plugin {
     if (this.styleEl) {
       this.styleEl.textContent = this.generateStyles();
     }
+    // Force cursor to update shape/animation when styles change
+    if (this.cursorRenderer) {
+      // Trigger update to apply new animation settings
+      requestAnimationFrame(() => {
+        this.cursorRenderer?.forceUpdate();
+      });
+    }
   }
 
   /**
@@ -270,7 +277,7 @@ export default class SmoothCursorPlugin extends Plugin {
   }
 
   private generateStyles(): string {
-    const { cursorColor, cursorOpacity, animationDuration } = this.settings;
+    const { cursorColor, cursorOpacity, animationDuration, enableBreathingAnimation, breathingAnimationDuration, breathingMinOpacity } = this.settings;
     // Convert animation duration from ms to seconds for CSS
     const transitionDuration = animationDuration / 1000;
     
@@ -308,11 +315,16 @@ export default class SmoothCursorPlugin extends Plugin {
         pointer-events: none;
         z-index: 100;
         background-color: ${cursorColor};
-        opacity: ${cursorOpacity};
         border-radius: 1px;
-        will-change: transform, width, height;
+        will-change: transform, width, height, opacity;
         transition: background-color 0.15s ease;
+        /* Note: opacity is set dynamically to allow animation override */
         /* Note: width/height transitions removed - handled by JavaScript animation engine */
+      }
+      
+      /* Set default opacity only when not breathing */
+      .smooth-cursor:not(.breathing) {
+        opacity: ${cursorOpacity};
       }
 
       .smooth-cursor.block {
@@ -338,13 +350,35 @@ export default class SmoothCursorPlugin extends Plugin {
         animation: smooth-cursor-blink 1s ease-in-out infinite;
       }
 
+      /* Breathing animation - smooth pulse effect */
+      @keyframes smooth-cursor-breathe {
+        0%, 100% { 
+          opacity: ${cursorOpacity}; 
+        }
+        50% { 
+          opacity: ${Math.max(breathingMinOpacity, 0.1)}; 
+        }
+      }
+
+      .smooth-cursor.breathing {
+        animation: smooth-cursor-breathe ${breathingAnimationDuration}s ease-in-out infinite !important;
+      }
+      
+      /* Ensure .moving class overrides .breathing animation - higher specificity */
+      .smooth-cursor.breathing.moving {
+        animation: none !important;
+        opacity: var(--smooth-cursor-opacity, ${cursorOpacity}) !important;
+      }
+
       /* Non-editor cursor styles */
+      /* Breathing animation is disabled for non-editor cursors to prevent flickering */
       .smooth-cursor-non-editor {
         position: absolute;
         pointer-events: none;
         z-index: 1000;
         background-color: ${cursorColor};
         opacity: ${cursorOpacity};
+        animation: none !important;
       }
     `;
   }

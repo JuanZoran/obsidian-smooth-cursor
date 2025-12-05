@@ -58,6 +58,11 @@ export interface SmoothCursorSettings {
   
   // CSS transform mode for smoother animation (may appear slightly blurry)
   useTransformAnimation: boolean;
+  
+  // Breathing animation settings
+  enableBreathingAnimation: boolean;
+  breathingAnimationDuration: number; // in seconds
+  breathingMinOpacity: number; // minimum opacity during breathing (0-1)
 }
 
 /**
@@ -84,5 +89,10 @@ export const DEFAULT_SETTINGS: SmoothCursorSettings = {
   
   // Transform animation default (off for sharper cursor)
   useTransformAnimation: false,
+  
+  // Breathing animation defaults
+  enableBreathingAnimation: true,
+  breathingAnimationDuration: 2, // 2 seconds per cycle
+  breathingMinOpacity: 0.3, // fade to 30% opacity
 };
 

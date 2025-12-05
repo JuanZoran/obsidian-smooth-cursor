@@ -119,6 +119,55 @@ export class SmoothCursorSettingTab extends PluginSettingTab {
           })
       );
 
+    // Breathing animation section
+    containerEl.createEl('h3', { text: '呼吸动画' });
+
+    // Enable breathing animation
+    new Setting(containerEl)
+      .setName('启用呼吸动画')
+      .setDesc('为光标添加平滑的呼吸效果（在所有模式下生效）')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.enableBreathingAnimation)
+          .onChange(async (value) => {
+            this.plugin.settings.enableBreathingAnimation = value;
+            await this.plugin.saveSettings();
+            this.plugin.updateCursorStyle();
+          })
+      );
+
+    // Breathing animation duration
+    new Setting(containerEl)
+      .setName('呼吸动画时长')
+      .setDesc('呼吸动画一个完整周期的时长（秒）')
+      .addSlider((slider) =>
+        slider
+          .setLimits(0.5, 5, 0.1)
+          .setValue(this.plugin.settings.breathingAnimationDuration)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.breathingAnimationDuration = value;
+            await this.plugin.saveSettings();
+            this.plugin.updateCursorStyle();
+          })
+      );
+
+    // Breathing minimum opacity
+    new Setting(containerEl)
+      .setName('呼吸最小透明度')
+      .setDesc('呼吸动画时光标淡出到的最小透明度（0-1）')
+      .addSlider((slider) =>
+        slider
+          .setLimits(0.1, 0.9, 0.1)
+          .setValue(this.plugin.settings.breathingMinOpacity)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.breathingMinOpacity = value;
+            await this.plugin.saveSettings();
+            this.plugin.updateCursorStyle();
+          })
+      );
+
     // Cursor shapes section
     containerEl.createEl('h3', { text: '各模式光标形状' });
 

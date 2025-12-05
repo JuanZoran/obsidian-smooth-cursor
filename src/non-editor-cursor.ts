@@ -42,6 +42,8 @@ export class NonEditorCursor {
   private createCursorElement() {
     this.cursorEl = document.createElement('div');
     this.cursorEl.className = 'smooth-cursor-non-editor';
+    // Non-editor cursor should not use breathing animation to avoid flickering
+    // due to frequent position updates
     this.cursorEl.style.cssText = `
       position: fixed;
       pointer-events: none;
@@ -51,6 +53,7 @@ export class NonEditorCursor {
       opacity: ${this.plugin.settings.cursorOpacity};
       border-radius: 1px;
       transition: opacity 0.15s ease;
+      animation: none !important;
     `;
     document.body.appendChild(this.cursorEl);
   }
@@ -296,6 +299,10 @@ export class NonEditorCursor {
     this.cursorEl.style.width = `${width}px`;
     this.cursorEl.style.height = `${height}px`;
     this.cursorEl.style.backgroundColor = this.plugin.settings.cursorColor;
+    // Non-editor cursor always uses static opacity to avoid flickering
+    // Breathing animation is disabled for non-editor cursors due to frequent updates
     this.cursorEl.style.opacity = String(this.plugin.settings.cursorOpacity);
+    // Ensure animation is disabled
+    this.cursorEl.style.animation = 'none';
   }
 }
