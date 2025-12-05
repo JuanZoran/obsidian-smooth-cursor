@@ -30,6 +30,8 @@ export class NativeCursorHider {
   detach(): void {
     this.isActive = false;
     
+    this.stopPeriodicCheck();
+    
     if (this.observer) {
       this.observer.disconnect();
       this.observer = null;
@@ -152,12 +154,14 @@ export class NativeCursorHider {
       attributeFilter: ['class'],
     });
     
-    // Also periodically check (as a fallback)
+    // Low-frequency periodic check as a fallback (only if MutationObserver misses something)
+    // Reduced from 100ms to 2000ms since MutationObserver handles most cases
     this.startPeriodicCheck();
   }
 
   /**
-   * Start periodic check to ensure cursors stay hidden
+   * Start low-frequency periodic check as a fallback
+   * MutationObserver handles most cases, this is just a safety net
    */
   private periodicCheckInterval: number | null = null;
   
@@ -170,7 +174,7 @@ export class NativeCursorHider {
       } else {
         this.stopPeriodicCheck();
       }
-    }, 100); // Check every 100ms
+    }, 2000); // Check every 2000ms (reduced frequency since MutationObserver is primary)
   }
 
   private stopPeriodicCheck(): void {

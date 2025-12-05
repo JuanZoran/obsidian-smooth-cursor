@@ -5,7 +5,7 @@ import type { VimMode } from './types';
 /**
  * VimStateProvider - Abstracts vim mode detection from different sources
  * Supports both Obsidian's built-in vim mode and community plugins
- * Optimized for performance with smart polling
+ * Uses event-driven detection via MutationObserver, keyboard events, and focus events
  */
 export class VimStateProvider {
   private plugin: SmoothCursorPlugin;
@@ -13,13 +13,11 @@ export class VimStateProvider {
   private editorView: EditorView | null = null;
   private modeChangeCallbacks: Set<(mode: VimMode) => void> = new Set();
   private observer: MutationObserver | null = null;
-  private pollInterval: number | null = null;
   private keydownHandler: ((e: KeyboardEvent) => void) | null = null;
   private focusHandler: ((e: FocusEvent) => void) | null = null;
   private blurHandler: ((e: FocusEvent) => void) | null = null;
   private detectModeScheduled = false;
   private isEditorFocused = false;
-  private pollIntervalMs = 500; // Increased from 200ms to 500ms
 
   constructor(plugin: SmoothCursorPlugin) {
     this.plugin = plugin;
@@ -35,28 +33,32 @@ export class VimStateProvider {
     this.editorView = editorView;
     this.isEditorFocused = this.checkEditorFocused();
     this.detectModeFromEditor();
-    this.setupEditorModeListener();
     this.setupEditorObserver();
   }
 
   /**
    * Setup MutationObserver for the specific editor
+   * Observer is already created in setupGlobalModeDetection, we just reconfigure it
    */
   private setupEditorObserver() {
-    if (!this.editorView) return;
+    if (!this.editorView || !this.observer) return;
     
-    if (this.observer) {
-      this.observer.disconnect();
-    }
+    // Disconnect from previous observation
+    this.observer.disconnect();
     
-    // Only observe editor DOM, not entire subtree for better performance
-    if (this.observer) {
-      this.observer.observe(this.editorView.dom, {
-        attributes: true,
-        attributeFilter: ['class'],
-        subtree: false, // Changed from true to false - only observe editor root
-      });
-    }
+    // Observe both document.body (for global changes) and editor DOM (for editor-specific changes)
+    this.observer.observe(document.body, {
+      attributes: true,
+      attributeFilter: ['class'],
+      subtree: false,
+    });
+    
+    // Also observe editor DOM for editor-specific class changes
+    this.observer.observe(this.editorView.dom, {
+      attributes: true,
+      attributeFilter: ['class'],
+      subtree: false, // Only observe editor root for better performance
+    });
   }
 
   /**
@@ -65,9 +67,9 @@ export class VimStateProvider {
   detach() {
     this.editorView = null;
     this.isEditorFocused = false;
-    this.stopPolling();
     
     if (this.observer) {
+      // Revert to observing only document.body when no editor is attached
       this.observer.disconnect();
       this.observer.observe(document.body, {
         attributes: true,
@@ -97,7 +99,6 @@ export class VimStateProvider {
    */
   destroy() {
     this.observer?.disconnect();
-    this.stopPolling();
     this.modeChangeCallbacks.clear();
     if (this.keydownHandler) {
       document.removeEventListener('keydown', this.keydownHandler, true);
@@ -129,7 +130,7 @@ export class VimStateProvider {
   }
 
   /**
-   * Setup focus detection to pause/resume polling
+   * Setup focus detection for immediate mode detection on focus
    */
   private setupFocusDetection() {
     this.focusHandler = (e: FocusEvent) => {
@@ -303,34 +304,6 @@ export class VimStateProvider {
     return null;
   }
 
-  /**
-   * Setup listener for mode changes within the editor
-   */
-  private setupEditorModeListener() {
-    this.startPolling();
-  }
-
-  /**
-   * Start polling for mode changes
-   * Only polls when editor is focused
-   */
-  private startPolling() {
-    this.stopPolling();
-    
-    this.pollInterval = window.setInterval(() => {
-      // Only poll if editor is focused - saves CPU when not actively editing
-      if (this.editorView && this.isEditorFocused) {
-        this.detectModeFromEditor();
-      }
-    }, this.pollIntervalMs);
-  }
-
-  private stopPolling() {
-    if (this.pollInterval !== null) {
-      window.clearInterval(this.pollInterval);
-      this.pollInterval = null;
-    }
-  }
 
   /**
    * Setup keyboard-based mode detection

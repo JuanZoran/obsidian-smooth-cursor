@@ -39,7 +39,6 @@ export class CursorRenderer {
   private updateScheduled = false;
   private lastCursorPos = -1;
   private modeUnsubscribe: (() => void) | null = null;
-  private rafId: number | null = null;
   private isDestroyed = false;
   private isScrolling = false;
   private scrollTimeout: number | null = null;
@@ -121,14 +120,20 @@ export class CursorRenderer {
     // Setup focus event listener for immediate response to focus changes
     this.setupFocusListener();
     
+    // Setup mouse and keyboard event listeners for cursor position changes
+    this.setupMouseKeyboardListeners();
+    
     this.isAttached = true;
     
     // smooth-cursor-active class is already added by editorStateManager.attach()
     // which ensures native cursor is always hidden while editor is attached
     // This prevents native cursor flash when focus switches between editor and non-editor areas
     
-    // Setup cursor position tracking (optimized polling as fallback)
-    this.setupCursorTracking();
+    // Perform initial health check
+    this.editorStateManager.ensureHealth(true);
+    
+    // Initialize cursor shape and breathing animation
+    this.updateCursorShape(this.plugin.getVimMode());
     
     this.plugin.debug('CursorRenderer attached');
     
@@ -141,54 +146,133 @@ export class CursorRenderer {
   }
 
   /**
-   * Setup CodeMirror transaction listener for immediate cursor tracking
-   * This replaces polling for cursor position updates during typing
+   * Setup CodeMirror transaction listener by intercepting EditorView.dispatch
+   * This is a workaround since we can't add ViewPlugin to extensions in Obsidian
    */
   private setupTransactionListener() {
     if (!this.editorView) return;
 
-    // Create the update plugin
+    // Intercept EditorView.dispatch to listen to all transactions
+    // Store original dispatch for cleanup
+    if (!(this.editorView as any).__originalDispatch) {
+      (this.editorView as any).__originalDispatch = this.editorView.dispatch.bind(this.editorView);
+    }
+    
+    const originalDispatch = (this.editorView as any).__originalDispatch;
+    const self = this;
+    
+    this.editorView.dispatch = function(tr: any) {
+      // Call original dispatch first
+      const result = originalDispatch(tr);
+      
+      // Then check for cursor position changes (use requestAnimationFrame to avoid blocking)
+      if (self.isAttached && self.editorView) {
+        requestAnimationFrame(() => {
+          if (self.isAttached && self.editorView) {
+            self.handleEditorUpdate(tr);
+          }
+        });
+      }
+      
+      return result;
+    };
+
+    // Also try to use ViewPlugin if possible (may not work without being in extensions)
     this.cursorUpdatePlugin = createCursorUpdatePlugin((update: ViewUpdate) => {
       if (!this.isAttached || !this.editorView) return;
-      
-      const now = performance.now();
-      
-      // Track if this is a typing action (document changed)
-      if (update.docChanged) {
-        this.lastDocChangeTime = now;
-        this.isTyping = true;
-        this.lastUpdateWasTyping = true;
-        
-        // Clear existing typing timeout
-        if (this.typingTimeout !== null) {
-          clearTimeout(this.typingTimeout);
-        }
-        
-        // Set timeout to mark end of typing
-        this.typingTimeout = window.setTimeout(() => {
-          this.isTyping = false;
-        }, 150);
-      } else {
-        this.lastUpdateWasTyping = false;
-      }
-      
-      // Check if cursor position changed
-      const sel = update.state.selection.main;
-      const cursorPos = sel.head;
-      
-      if (cursorPos !== this.lastCursorPos) {
-        this.lastCursorPos = cursorPos;
-        
-        // Clear coordinate cache on position change
-        this.coordinateService.clearCache();
-        
-        // Update cursor immediately with typing context
-        this.updateCursorPositionWithContext(this.lastUpdateWasTyping);
-      }
+      this.handleEditorUpdateFromView(update);
     });
 
-    this.plugin.debug('Transaction listener created');
+    this.plugin.debug('Transaction listener created (dispatch interception)');
   }
+
+  /**
+   * Handle editor update from intercepted dispatch
+   */
+  private handleEditorUpdate(tr: any) {
+    if (!this.editorView) return;
+    
+    const now = performance.now();
+    const state = this.editorView.state;
+    
+    // Check if document changed (typing)
+    const docChanged = tr.docChanged || false;
+    
+    if (docChanged) {
+      this.lastDocChangeTime = now;
+      this.isTyping = true;
+      this.lastUpdateWasTyping = true;
+      
+      // Clear existing typing timeout
+      if (this.typingTimeout !== null) {
+        clearTimeout(this.typingTimeout);
+      }
+      
+      // Set timeout to mark end of typing
+      this.typingTimeout = window.setTimeout(() => {
+        this.isTyping = false;
+      }, 150);
+    } else {
+      this.lastUpdateWasTyping = false;
+    }
+    
+    // Check if cursor position changed
+    const sel = state.selection.main;
+    const cursorPos = sel.head;
+    
+    if (cursorPos !== this.lastCursorPos) {
+      this.lastCursorPos = cursorPos;
+      
+      // Clear coordinate cache on position change
+      this.coordinateService.clearCache();
+      
+      // Update cursor immediately with typing context
+      this.updateCursorPositionWithContext(this.lastUpdateWasTyping);
+    }
+  }
+
+  /**
+   * Handle editor update from ViewPlugin (if it works)
+   */
+  private handleEditorUpdateFromView(update: ViewUpdate) {
+    if (!this.isAttached || !this.editorView) return;
+    
+    const now = performance.now();
+    
+    // Track if this is a typing action (document changed)
+    if (update.docChanged) {
+      this.lastDocChangeTime = now;
+      this.isTyping = true;
+      this.lastUpdateWasTyping = true;
+      
+      // Clear existing typing timeout
+      if (this.typingTimeout !== null) {
+        clearTimeout(this.typingTimeout);
+      }
+      
+      // Set timeout to mark end of typing
+      this.typingTimeout = window.setTimeout(() => {
+        this.isTyping = false;
+      }, 150);
+    } else {
+      this.lastUpdateWasTyping = false;
+    }
+    
+    // Check if cursor position changed
+    const sel = update.state.selection.main;
+    const cursorPos = sel.head;
+    
+    if (cursorPos !== this.lastCursorPos) {
+      this.lastCursorPos = cursorPos;
+      
+      // Clear coordinate cache on position change
+      this.coordinateService.clearCache();
+      
+      // Update cursor immediately with typing context
+      this.updateCursorPositionWithContext(this.lastUpdateWasTyping);
+    }
+  }
+
 
   /**
    * Update cursor position with typing context for animation optimization
@@ -321,6 +405,71 @@ export class CursorRenderer {
   }
 
   /**
+   * Setup mouse and keyboard event listeners to catch cursor movements
+   * that might not trigger transactions (e.g., mouse clicks, arrow keys)
+   */
+  private setupMouseKeyboardListeners() {
+    if (!this.editorView) return;
+
+    // Listen for mouse clicks in the editor
+    const clickHandler = (e: MouseEvent) => {
+      if (!this.editorView || !this.isAttached) return;
+      
+      const target = e.target as HTMLElement;
+      if (target.closest('.cm-editor')) {
+        // Small delay to allow selection to update
+        requestAnimationFrame(() => {
+          if (this.editorView && this.isAttached) {
+            const sel = this.editorView.state.selection.main;
+            const cursorPos = sel.head;
+            
+            if (cursorPos !== this.lastCursorPos) {
+              this.lastCursorPos = cursorPos;
+              this.coordinateService.clearCache();
+              this.scheduleUpdate();
+            }
+          }
+        });
+      }
+    };
+
+    // Listen for keyboard navigation (arrow keys, home, end, etc.)
+    const keydownHandler = (e: KeyboardEvent) => {
+      if (!this.editorView || !this.isAttached) return;
+      
+      const target = e.target as HTMLElement;
+      if (!target.closest('.cm-editor')) return;
+
+      // Check for navigation keys
+      const navigationKeys = [
+        'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+        'Home', 'End', 'PageUp', 'PageDown'
+      ];
+      
+      if (navigationKeys.includes(e.key) || 
+          (e.key === 'Home' || e.key === 'End') ||
+          (e.ctrlKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight'))) {
+        // Small delay to allow selection to update
+        requestAnimationFrame(() => {
+          if (this.editorView && this.isAttached) {
+            const sel = this.editorView.state.selection.main;
+            const cursorPos = sel.head;
+            
+            if (cursorPos !== this.lastCursorPos) {
+              this.lastCursorPos = cursorPos;
+              this.coordinateService.clearCache();
+              this.scheduleUpdate();
+            }
+          }
+        });
+      }
+    };
+
+    this.eventManager.addEventListener(this.editorView.dom, 'click', clickHandler);
+    this.eventManager.addEventListener(this.editorView.dom, 'keydown', keydownHandler, true);
+  }
+
+  /**
    * Setup focus event listener for immediate response to focus changes
    * This prevents native cursor flash when focus returns to editor
    */
@@ -337,6 +486,9 @@ export class CursorRenderer {
         // Ensure smooth-cursor-active class is present (should already be there from attach)
         // Force immediate application to prevent any native cursor flash
         this.editorStateManager.setEditorActiveClass(true);
+        
+        // Perform health check on focus
+        this.editorStateManager.ensureHealth(true);
         
         // Force hide native cursors immediately (direct DOM manipulation)
         this.nativeCursorHider.forceHide();
@@ -387,6 +539,9 @@ export class CursorRenderer {
         // Add class immediately on mousedown, before focus event
         // This ensures native cursor is hidden before browser renders focus state
         this.editorStateManager.setEditorActiveClass(true);
+        
+        // Perform health check on mousedown
+        this.editorStateManager.ensureHealth(true);
       }
     };
 
@@ -456,14 +611,16 @@ export class CursorRenderer {
    * Detach from current editor
    */
   detach() {
+    // Restore original dispatch if we intercepted it
+    if (this.editorView && (this.editorView as any).__originalDispatch) {
+      this.editorView.dispatch = (this.editorView as any).__originalDispatch;
+      delete (this.editorView as any).__originalDispatch;
+    }
+    
     // Remove all event listeners
     this.eventManager.removeAll();
     
     // Clear timeouts
-    if (this.rafId !== null) {
-      cancelAnimationFrame(this.rafId);
-      this.rafId = null;
-    }
     if (this.scrollTimeout !== null) {
       clearTimeout(this.scrollTimeout);
       this.scrollTimeout = null;
@@ -534,57 +691,6 @@ export class CursorRenderer {
     this.scheduleUpdate();
   }
 
-  /**
-   * Optimized polling mechanism - reduces CPU usage by:
-   * 1. Throttling focus checks
-   * 2. Reducing health check frequency
-   * 3. Only updating on actual position changes
-   */
-  private setupCursorTracking() {
-    if (!this.editorView) return;
-
-    this.editorStateManager.ensureHealth(true);
-
-    const pollCursor = () => {
-      if (!this.isAttached || !this.editorView) {
-        this.rafId = null;
-        return;
-      }
-      
-      // Throttled focus check (handled by EditorStateManager)
-      const isFocused = this.editorStateManager.isFocused();
-      
-      // Reduced health check frequency (handled by EditorStateManager)
-      this.editorStateManager.ensureHealth();
-      
-      // Hide cursor if not focused
-      if (!isFocused) {
-        this.cursorElementManager.hide();
-        this.rafId = requestAnimationFrame(pollCursor);
-        return;
-      }
-      
-      // Check for position changes
-      const sel = this.editorView.state.selection.main;
-      const cursorPos = sel.head;
-      
-      const cursorEl = this.cursorElementManager.getElement();
-      const needsUpdate = (
-        this.lastCursorPos === -1 || 
-        cursorPos !== this.lastCursorPos ||
-        (cursorEl && cursorEl.style.display === 'none')
-      );
-      
-      if (needsUpdate) {
-        this.lastCursorPos = cursorPos;
-        this.scheduleUpdate();
-      }
-      
-      this.rafId = requestAnimationFrame(pollCursor);
-    };
-    
-    this.rafId = requestAnimationFrame(pollCursor);
-  }
 
   private scheduleUpdate() {
     if (this.updateScheduled || this.isDestroyed) return;
