@@ -67,9 +67,14 @@ export class CoordinateService {
 
   /**
    * Clear coordinate cache
+   * This should be called when DOM structure changes (e.g., Live Preview mode line switches)
+   * to ensure cached coordinates are not used with outdated DOM structure
    */
   clearCache() {
     this.coordsCache.clear();
+    // Also clear last successful coordinates to prevent using stale coordinates
+    // after DOM structure changes (e.g., when line switches from rendered to source mode)
+    this.lastSuccessfulCoords = null;
   }
 
   /**

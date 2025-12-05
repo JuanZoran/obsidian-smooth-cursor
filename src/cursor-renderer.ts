@@ -5,6 +5,7 @@ import type { CursorPosition, CursorShape, VimMode } from './types';
 import { calculateCursorDimensions } from './cursor-utils';
 import { CoordinateService } from './services/coordinate-service';
 import { CharacterMeasurementService } from './services/character-measurement-service';
+import { DOMChangeDetectorService } from './services/dom-change-detector-service';
 import { CursorElementManager } from './core/cursor-element-manager';
 import { EditorStateManager } from './core/editor-state-manager';
 import { EventManager } from './core/event-manager';
@@ -49,6 +50,7 @@ export class CursorRenderer {
   // Services and managers
   private coordinateService: CoordinateService;
   private characterMeasurementService: CharacterMeasurementService;
+  private domChangeDetector: DOMChangeDetectorService;
   private cursorElementManager: CursorElementManager;
   private editorStateManager: EditorStateManager;
   private eventManager: EventManager;
@@ -73,6 +75,7 @@ export class CursorRenderer {
     // Initialize services and managers
     this.coordinateService = new CoordinateService();
     this.characterMeasurementService = new CharacterMeasurementService();
+    this.domChangeDetector = new DOMChangeDetectorService();
     this.cursorElementManager = new CursorElementManager(plugin.settings);
     this.editorStateManager = new EditorStateManager();
     this.eventManager = new EventManager();
@@ -123,6 +126,9 @@ export class CursorRenderer {
     
     // Setup mouse and keyboard event listeners for cursor position changes
     this.setupMouseKeyboardListeners();
+    
+    // Setup DOM change detector for Live Preview mode compatibility
+    this.setupDOMChangeDetector();
     
     this.isAttached = true;
     
@@ -263,6 +269,80 @@ export class CursorRenderer {
     this.handleEditorUpdateInternal(docChanged, cursorPos);
   }
 
+  /**
+   * Clear all caches (coordinates and character measurements)
+   */
+  private clearAllCaches(): void {
+    this.coordinateService.clearCache();
+    this.characterMeasurementService.clearCache();
+  }
+
+  /**
+   * Check if editor is focused, hide cursor if not
+   * @returns true if focused, false otherwise
+   */
+  private checkFocusAndHideIfNeeded(): boolean {
+    if (!this.editorStateManager.isFocused()) {
+      this.cursorElementManager.hide();
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Calculate cursor position from current editor state
+   * @returns CursorPosition or null if invalid
+   */
+  private calculateCursorPosition(): CursorPosition | null {
+    if (!this.editorView) return null;
+
+    const sel = this.editorView.state.selection.main;
+    const pos = sel.head;
+    const coords = this.coordinateService.getCursorCoordsCached(pos);
+    
+    if (!coords || isNaN(coords.left) || isNaN(coords.top) || !isFinite(coords.left) || !isFinite(coords.top)) {
+      return null;
+    }
+
+    const charWidth = this.characterMeasurementService.measureCharacterWidthCached(pos);
+    const lineHeight = getDefaultLineHeight(this.editorView);
+    
+    return {
+      x: coords.left,
+      y: coords.top,
+      width: charWidth,
+      height: lineHeight,
+    };
+  }
+
+  /**
+   * Calculate target cursor position with shape-adjusted dimensions
+   * @param basePosition - Base cursor position
+   * @param shape - Cursor shape
+   * @returns Target position with adjusted dimensions
+   */
+  private calculateTargetPosition(basePosition: CursorPosition, shape: CursorShape): CursorPosition {
+    const { width: targetWidth, height: targetHeight } = calculateCursorDimensions(basePosition, shape);
+    
+    return {
+      x: basePosition.x,
+      y: basePosition.y,
+      width: targetWidth,
+      height: targetHeight,
+    };
+  }
+
+  /**
+   * Handle cursor position change (clear cache and schedule update)
+   * @param cursorPos - New cursor position
+   */
+  private handleCursorPositionChange(cursorPos: number): void {
+    if (cursorPos !== this.lastCursorPos) {
+      this.lastCursorPos = cursorPos;
+      this.clearAllCaches();
+      this.scheduleUpdate();
+    }
+  }
 
   /**
    * Update cursor position with typing context for animation optimization
@@ -277,58 +357,32 @@ export class CursorRenderer {
       return;
     }
 
-    const sel = this.editorView.state.selection.main;
-    const pos = sel.head;
+    // Check if editor is focused - if not, hide cursor and return
+    if (!this.checkFocusAndHideIfNeeded()) {
+      return;
+    }
+
+    const basePosition = this.calculateCursorPosition();
+    if (!basePosition) {
+      this.cursorElementManager.hide();
+      return;
+    }
 
     try {
-      const coords = this.coordinateService.getCursorCoordsCached(pos);
-      
-      if (!coords) {
-        return;
-      }
-
-      const charWidth = this.characterMeasurementService.measureCharacterWidthCached(pos);
-      const lineHeight = getDefaultLineHeight(this.editorView);
-
-      if (isNaN(coords.left) || isNaN(coords.top) || !isFinite(coords.left) || !isFinite(coords.top)) {
-        return;
-      }
-
-      // Base position with character dimensions
-      const basePosition: CursorPosition = {
-        x: coords.left,
-        y: coords.top,
-        width: charWidth,
-        height: lineHeight,
-      };
-
-      if (isNaN(basePosition.x) || isNaN(basePosition.y)) {
-        this.cursorElementManager.hide();
-        return;
-      }
-
       this.cursorElementManager.show();
       
       // Get current shape to calculate target dimensions
       const shape = (cursorEl.dataset.shape || 'block') as CursorShape;
-      const { width: targetWidth, height: targetHeight } = calculateCursorDimensions(basePosition, shape);
-      
-      // Create target position with shape-adjusted dimensions for smooth animation
-      const targetPosition: CursorPosition = {
-        x: basePosition.x,
-        y: basePosition.y,
-        width: targetWidth,
-        height: targetHeight,
-      };
+      const targetPosition = this.calculateTargetPosition(basePosition, shape);
       
       if (this.isScrolling) {
         // Use immediate positioning during scroll
-        const yOffset = shape === 'underline' ? lineHeight - targetHeight : 0;
+        const yOffset = shape === 'underline' ? basePosition.height - targetPosition.height : 0;
         this.cursorElementManager.updatePosition(
           targetPosition.x,
           targetPosition.y,
-          targetWidth,
-          targetHeight,
+          targetPosition.width,
+          targetPosition.height,
           this.plugin.settings.useTransformAnimation,
           yOffset
         );
@@ -372,7 +426,7 @@ export class CursorRenderer {
       const now = performance.now();
       if (now - this.lastScrollUpdateTime >= this.scrollThrottleInterval) {
         this.lastScrollUpdateTime = now;
-        if (this.editorStateManager.isFocused()) {
+        if (this.checkFocusAndHideIfNeeded()) {
           this.updatePositionImmediate();
         }
       }
@@ -380,7 +434,7 @@ export class CursorRenderer {
       // Set timeout to mark end of scroll
       this.scrollTimeout = window.setTimeout(() => {
         this.isScrolling = false;
-        if (this.editorStateManager.isFocused()) {
+        if (this.checkFocusAndHideIfNeeded()) {
           this.scheduleUpdate();
         }
       }, 150);
@@ -413,11 +467,7 @@ export class CursorRenderer {
             const sel = this.editorView.state.selection.main;
             const cursorPos = sel.head;
             
-            if (cursorPos !== this.lastCursorPos) {
-              this.lastCursorPos = cursorPos;
-              this.coordinateService.clearCache();
-              this.scheduleUpdate();
-            }
+            this.handleCursorPositionChange(cursorPos);
           }
         });
       }
@@ -445,11 +495,7 @@ export class CursorRenderer {
             const sel = this.editorView.state.selection.main;
             const cursorPos = sel.head;
             
-            if (cursorPos !== this.lastCursorPos) {
-              this.lastCursorPos = cursorPos;
-              this.coordinateService.clearCache();
-              this.scheduleUpdate();
-            }
+            this.handleCursorPositionChange(cursorPos);
           }
         });
       }
@@ -457,6 +503,37 @@ export class CursorRenderer {
 
     this.eventManager.addEventListener(this.editorView.dom, 'click', clickHandler);
     this.eventManager.addEventListener(this.editorView.dom, 'keydown', keydownHandler, true);
+  }
+
+  /**
+   * Setup DOM change detector for Live Preview mode compatibility
+   * Detects when Obsidian switches line display mode (rendered -> source) and updates cursor position
+   */
+  private setupDOMChangeDetector() {
+    if (!this.editorView) return;
+
+    // Set up callback to handle DOM structure changes
+    this.domChangeDetector.attach(this.editorView, () => {
+      if (!this.isAttached || !this.editorView) return;
+
+      // Check focus state first - if editor is not focused, hide cursor
+      if (!this.checkFocusAndHideIfNeeded()) {
+        this.plugin.debug('DOM structure change detected but editor not focused, hiding cursor');
+        return;
+      }
+
+      this.plugin.debug('DOM structure change detected, clearing cache and updating cursor');
+
+      // Clear all caches to force recalculation with new DOM structure
+      this.clearAllCaches();
+      
+      // Reset last cursor position to force position update
+      this.lastCursorPos = -1;
+      
+      // Immediately update cursor position to reflect new DOM structure
+      // Use immediate update since DOM has already changed
+      this.updatePositionImmediate();
+    });
   }
 
   /**
@@ -515,6 +592,7 @@ export class CursorRenderer {
               // Hide custom cursor but keep smooth-cursor-active class
               // This ensures native cursor stays hidden when focus returns
               this.cursorElementManager.hide();
+              this.plugin.debug('Editor lost focus, cursor hidden');
             }
           }
         }, 10);
@@ -550,51 +628,38 @@ export class CursorRenderer {
   private updatePositionImmediate() {
     if (!this.editorView) return;
 
-    const sel = this.editorView.state.selection.main;
-    const pos = sel.head;
+    // Check if editor is focused - if not, hide cursor and return
+    if (!this.checkFocusAndHideIfNeeded()) {
+      return;
+    }
+
+    const cursorEl = this.cursorElementManager.getElement();
+    if (!cursorEl) return;
+
+    const basePosition = this.calculateCursorPosition();
+    if (!basePosition) {
+      this.cursorElementManager.hide();
+      return;
+    }
 
     try {
-      const coords = this.coordinateService.getCursorCoordsCached(pos);
-      if (!coords) {
-        this.cursorElementManager.hide();
-        return;
-      }
-
-      const charWidth = this.characterMeasurementService.measureCharacterWidthCached(pos);
-      const lineHeight = getDefaultLineHeight(this.editorView);
-
-      if (isNaN(coords.left) || isNaN(coords.top)) {
-        this.cursorElementManager.hide();
-        return;
-      }
-      
       this.cursorElementManager.show();
       
-      const cursorEl = this.cursorElementManager.getElement();
-      if (!cursorEl) return;
-      
       const shape = (cursorEl.dataset.shape || 'block') as CursorShape;
-      const { width: targetWidth, height: targetHeight } = calculateCursorDimensions(
-        { x: coords.left, y: coords.top, width: charWidth, height: lineHeight },
-        shape
-      );
-      const yOffset = shape === 'underline' ? lineHeight - targetHeight : 0;
+      const targetPosition = this.calculateTargetPosition(basePosition, shape);
+      const lineHeight = getDefaultLineHeight(this.editorView);
+      const yOffset = shape === 'underline' ? lineHeight - targetPosition.height : 0;
       
       this.cursorElementManager.updatePosition(
-        coords.left,
-        coords.top,
-        targetWidth,
-        targetHeight,
+        targetPosition.x,
+        targetPosition.y,
+        targetPosition.width,
+        targetPosition.height,
         this.plugin.settings.useTransformAnimation,
         yOffset
       );
       
-      this.animationEngine.setImmediate({
-        x: coords.left,
-        y: coords.top,
-        width: targetWidth,
-        height: targetHeight,
-      });
+      this.animationEngine.setImmediate(targetPosition);
     } catch (e) {
       this.cursorElementManager.hide();
     }
@@ -640,6 +705,7 @@ export class CursorRenderer {
     // Detach services and managers
     this.coordinateService.detach();
     this.characterMeasurementService.detach();
+    this.domChangeDetector.detach();
     this.editorStateManager.detach();
     this.nativeCursorHider.detach();
     
@@ -676,7 +742,7 @@ export class CursorRenderer {
    */
   forceUpdate() {
     this.lastCursorPos = -1;
-    this.coordinateService.clearCache(); // Clear cache on force update
+    this.clearAllCaches(); // Clear cache on force update
     // Also update shape/animation to apply any setting changes
     const cursorEl = this.cursorElementManager.getElement();
     if (cursorEl && this.editorView) {

@@ -133,5 +133,12 @@ export class CharacterMeasurementService {
   private getDefaultCharWidth(): number {
     return getDefaultCharWidth(this.editorView);
   }
+
+  /**
+   * Clear character width cache
+   */
+  clearCache(): void {
+    this.charWidthCache.clear();
+  }
 }
 
