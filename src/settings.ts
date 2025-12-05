@@ -44,6 +44,50 @@ export class ObVideSettingTab extends PluginSettingTab {
           })
       );
 
+    // Insert mode animation section
+    containerEl.createEl('h3', { text: '输入模式动画' });
+
+    // Enable insert mode animation
+    new Setting(containerEl)
+      .setName('启用输入模式平滑动画')
+      .setDesc('在输入文字时启用光标平滑移动效果')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.enableInsertModeAnimation)
+          .onChange(async (value) => {
+            this.plugin.settings.enableInsertModeAnimation = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    // Insert mode animation duration
+    new Setting(containerEl)
+      .setName('输入模式动画时长')
+      .setDesc('输入时光标移动动画的持续时间（毫秒），建议设置较短以保持流畅')
+      .addSlider((slider) =>
+        slider
+          .setLimits(20, 150, 10)
+          .setValue(this.plugin.settings.insertModeAnimationDuration)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.insertModeAnimationDuration = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    // Transform animation mode
+    new Setting(containerEl)
+      .setName('使用 Transform 动画')
+      .setDesc('使用 CSS transform 进行动画（GPU加速更流畅，但光标可能略显模糊）')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.useTransformAnimation)
+          .onChange(async (value) => {
+            this.plugin.settings.useTransformAnimation = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
     // Cursor color
     new Setting(containerEl)
       .setName('光标颜色')

@@ -22,6 +22,14 @@ export class AnimationEngine {
   // Cached lerp factor to avoid recalculation every frame
   private cachedLerpFactor = 0.16;
   private cachedAnimationDuration = 100;
+  
+  // Typing-specific animation parameters
+  private cachedTypingLerpFactor = 0.35;
+  private cachedTypingAnimationDuration = 50;
+  private isCurrentlyTyping = false;
+  
+  // Movement callback for blink pause integration
+  private onMovementCallback: ((isMoving: boolean) => void) | null = null;
 
   constructor(plugin: ObVidePlugin) {
     this.plugin = plugin;
@@ -44,21 +52,46 @@ export class AnimationEngine {
       this.cachedAnimationDuration = duration;
       this.cachedLerpFactor = Math.min(1, 16 / Math.max(duration, 16));
     }
+    
+    // Update typing lerp factor - faster animation for typing
+    const typingDuration = this.plugin.settings.insertModeAnimationDuration ?? 50;
+    if (typingDuration !== this.cachedTypingAnimationDuration) {
+      this.cachedTypingAnimationDuration = typingDuration;
+      this.cachedTypingLerpFactor = Math.min(1, 16 / Math.max(typingDuration, 16));
+    }
+  }
+
+  /**
+   * Set callback for movement state changes (for blink pause integration)
+   */
+  setOnMovement(callback: (isMoving: boolean) => void) {
+    this.onMovementCallback = callback;
   }
 
   /**
    * Animate cursor to a new position
+   * @param target - Target cursor position
+   * @param isTyping - Whether this movement is from typing (enables faster animation)
    */
-  animateTo(target: CursorPosition) {
-    const { enableAnimation } = this.plugin.settings;
+  animateTo(target: CursorPosition, isTyping = false) {
+    const { enableAnimation, enableInsertModeAnimation } = this.plugin.settings;
     const now = performance.now();
     
     // Calculate time since last update
     const timeSinceLastUpdate = now - this.lastUpdateTime;
     this.lastUpdateTime = now;
+    
+    // Track typing state for lerp factor selection
+    this.isCurrentlyTyping = isTyping;
 
     // If animation is disabled, jump directly
     if (!enableAnimation) {
+      this.setPositionDirect(target);
+      return;
+    }
+    
+    // If insert mode animation is disabled and we're typing, jump directly
+    if (isTyping && enableInsertModeAnimation === false) {
       this.setPositionDirect(target);
       return;
     }
@@ -74,9 +107,9 @@ export class AnimationEngine {
       return;
     }
 
-    // Detect rapid movement (updates faster than 50ms apart)
-    // For rapid small movements, skip animation (threshold: 100^2 = 10000)
-    if (timeSinceLastUpdate < 50 && distanceSquared < 10000) {
+    // For typing, we want smooth animation even for rapid movements
+    // Only skip animation for rapid movements when NOT typing
+    if (!isTyping && timeSinceLastUpdate < 50 && distanceSquared < 10000) {
       this.setPositionDirect(target);
       return;
     }
@@ -92,6 +125,9 @@ export class AnimationEngine {
     
     // Update lerp factor if settings changed
     this.updateLerpFactor();
+    
+    // Notify movement callback (for blink pause)
+    this.onMovementCallback?.(true);
     
     // Start animation if not already running
     if (!this.isAnimating) {
@@ -172,10 +208,15 @@ export class AnimationEngine {
     // Early exit checks
     if (!this.isAnimating || this.isStopped) {
       this.rafId = null;
+      // Notify that movement has stopped
+      this.onMovementCallback?.(false);
       return;
     }
 
-    const lerpFactor = this.cachedLerpFactor;
+    // Use adaptive lerp factor based on typing state
+    const lerpFactor = this.isCurrentlyTyping 
+      ? this.cachedTypingLerpFactor 
+      : this.cachedLerpFactor;
     
     // Lerp towards target (inline calculation for performance)
     this.currentPos.x += (this.targetPos.x - this.currentPos.x) * lerpFactor;
@@ -199,7 +240,10 @@ export class AnimationEngine {
       this.currentPos.height = this.targetPos.height;
       this.onFrameCallback?.(this.currentPos);
       this.isAnimating = false;
+      this.isCurrentlyTyping = false;
       this.rafId = null;
+      // Notify that movement has stopped
+      this.onMovementCallback?.(false);
     } else {
       // Continue animation
       this.rafId = requestAnimationFrame(() => this.animate());

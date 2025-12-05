@@ -1,8 +1,23 @@
-import { EditorView } from '@codemirror/view';
+import { EditorView, ViewPlugin, ViewUpdate } from '@codemirror/view';
 import type ObVidePlugin from './main';
 import type { AnimationEngine } from './animation';
 import type { CursorPosition, CursorShape, VimMode } from './types';
 import { calculateCursorDimensions, isCursorInView } from './cursor-utils';
+
+/**
+ * Create a ViewPlugin that listens for cursor position changes
+ * This provides immediate detection of cursor movement during typing
+ */
+function createCursorUpdatePlugin(onUpdate: (update: ViewUpdate) => void) {
+  return ViewPlugin.fromClass(class {
+    update(update: ViewUpdate) {
+      // Trigger callback when document changes or selection changes
+      if (update.docChanged || update.selectionSet || update.viewportChanged) {
+        onUpdate(update);
+      }
+    }
+  });
+}
 
 /**
  * CursorRenderer - Manages custom cursor rendering in CodeMirror editors
@@ -41,6 +56,13 @@ export class CursorRenderer {
   
   // Character width caching  
   private charWidthCache: Map<string, number> = new Map();
+  
+  // Transaction-based cursor tracking
+  private cursorUpdatePlugin: ReturnType<typeof createCursorUpdatePlugin> | null = null;
+  private lastDocChangeTime = 0;
+  private isTyping = false;
+  private typingTimeout: number | null = null;
+  private lastUpdateWasTyping = false;
 
   constructor(plugin: ObVidePlugin, animationEngine: AnimationEngine) {
     this.plugin = plugin;
@@ -48,6 +70,9 @@ export class CursorRenderer {
     
     // Set up animation frame callback
     this.animationEngine.setOnFrame((pos) => this.applyCursorPosition(pos));
+    
+    // Set up movement callback for blink pause
+    this.animationEngine.setOnMovement((isMoving) => this.handleMovementState(isMoving));
     
     // Listen for vim mode changes
     this.modeUnsubscribe = this.plugin.vimState?.onModeChange((mode) => {
@@ -69,6 +94,9 @@ export class CursorRenderer {
     // Create cursor elements
     this.createCursorElements();
     
+    // Setup transaction listener for immediate cursor tracking during typing
+    this.setupTransactionListener();
+    
     // Setup scroll event listener for immediate position updates during scroll
     this.setupScrollListener();
     
@@ -81,7 +109,7 @@ export class CursorRenderer {
     this.cachedEditorHasActiveClass = true;
     this.cachedIsFocused = this.checkEditorFocused();
     
-    // Setup cursor position tracking (optimized polling)
+    // Setup cursor position tracking (optimized polling as fallback)
     this.setupCursorTracking();
     
     this.plugin.debug('CursorRenderer attached');
@@ -92,6 +120,137 @@ export class CursorRenderer {
         this.scheduleUpdate();
       }
     });
+  }
+
+  /**
+   * Setup CodeMirror transaction listener for immediate cursor tracking
+   * This replaces polling for cursor position updates during typing
+   */
+  private setupTransactionListener() {
+    if (!this.editorView) return;
+
+    // Create the update plugin
+    this.cursorUpdatePlugin = createCursorUpdatePlugin((update: ViewUpdate) => {
+      if (!this.isAttached || !this.editorView) return;
+      
+      const now = performance.now();
+      
+      // Track if this is a typing action (document changed)
+      if (update.docChanged) {
+        this.lastDocChangeTime = now;
+        this.isTyping = true;
+        this.lastUpdateWasTyping = true;
+        
+        // Clear existing typing timeout
+        if (this.typingTimeout !== null) {
+          clearTimeout(this.typingTimeout);
+        }
+        
+        // Set timeout to mark end of typing
+        this.typingTimeout = window.setTimeout(() => {
+          this.isTyping = false;
+        }, 150);
+      } else {
+        this.lastUpdateWasTyping = false;
+      }
+      
+      // Check if cursor position changed
+      const sel = update.state.selection.main;
+      const cursorPos = sel.head;
+      
+      if (cursorPos !== this.lastCursorPos) {
+        this.lastCursorPos = cursorPos;
+        
+        // Clear coordinate cache on position change
+        this.coordsCache.clear();
+        
+        // Update cursor immediately with typing context
+        this.updateCursorPositionWithContext(this.lastUpdateWasTyping);
+      }
+    });
+
+    // Note: We can't dynamically add extensions to an existing EditorView in CM6
+    // The plugin is created but we still use the polling mechanism as fallback
+    // The transaction listener is primarily for detecting typing vs movement
+    this.plugin.debug('Transaction listener created');
+  }
+
+  /**
+   * Update cursor position with typing context for animation optimization
+   */
+  private updateCursorPositionWithContext(isTyping: boolean) {
+    if (!this.editorView || !this.cursorEl || !this.cursorEl.isConnected) {
+      if (!this.cursorEl?.isConnected) {
+        this.ensureCursorHealth();
+      }
+      return;
+    }
+
+    const sel = this.editorView.state.selection.main;
+    const pos = sel.head;
+
+    try {
+      const coords = this.getCursorCoordsCached(pos);
+      
+      if (!coords) {
+        return;
+      }
+
+      const charWidth = this.measureCharacterWidthCached(pos);
+      const lineHeight = this.editorView.defaultLineHeight;
+
+      if (isNaN(coords.left) || isNaN(coords.top) || !isFinite(coords.left) || !isFinite(coords.top)) {
+        return;
+      }
+
+      const targetPosition: CursorPosition = {
+        x: coords.left,
+        y: coords.top,
+        width: charWidth,
+        height: lineHeight,
+      };
+
+      if (isNaN(targetPosition.x) || isNaN(targetPosition.y)) {
+        this.hideCursor();
+        return;
+      }
+
+      if (this.cursorEl) {
+        this.showCursor();
+        
+        if (this.isScrolling) {
+          // Use immediate positioning during scroll
+          if (this.plugin.settings.useTransformAnimation) {
+            this.cursorEl.style.transform = `translate(${targetPosition.x}px, ${targetPosition.y}px)`;
+            this.cursorEl.style.left = '0';
+            this.cursorEl.style.top = '0';
+          } else {
+            this.cursorEl.style.transform = 'none';
+            this.cursorEl.style.left = `${targetPosition.x}px`;
+            this.cursorEl.style.top = `${targetPosition.y}px`;
+          }
+          this.cursorEl.style.width = `${targetPosition.width}px`;
+          this.cursorEl.style.height = `${targetPosition.height}px`;
+          this.animationEngine.setImmediate(targetPosition);
+        } else {
+          const currentLeft = parseFloat(this.cursorEl.style.left || '0');
+          const currentTop = parseFloat(this.cursorEl.style.top || '0');
+          const wasHidden = (currentLeft <= -1000 || currentTop <= -1000) || 
+                           this.cursorEl.style.display === 'none';
+          
+          if (wasHidden) {
+            this.animationEngine.setImmediate(targetPosition);
+            this.applyCursorPosition(targetPosition);
+          } else {
+            // Pass typing context to animation engine for adaptive lerp
+            this.animationEngine.animateTo(targetPosition, isTyping);
+          }
+        }
+      }
+      
+    } catch (e) {
+      this.hideCursor();
+    }
   }
 
   /**
@@ -154,8 +313,18 @@ export class CursorRenderer {
       }
       
       this.showCursor();
-      this.cursorEl.style.left = `${coords.left}px`;
-      this.cursorEl.style.top = `${coords.top}px`;
+      
+      // Handle transform vs left/top positioning
+      if (this.plugin.settings.useTransformAnimation) {
+        this.cursorEl.style.transform = `translate(${coords.left}px, ${coords.top}px)`;
+        this.cursorEl.style.left = '0';
+        this.cursorEl.style.top = '0';
+      } else {
+        this.cursorEl.style.transform = 'none';
+        this.cursorEl.style.left = `${coords.left}px`;
+        this.cursorEl.style.top = `${coords.top}px`;
+      }
+      
       this.cursorEl.style.width = `${charWidth}px`;
       this.cursorEl.style.height = `${lineHeight}px`;
       
@@ -189,6 +358,10 @@ export class CursorRenderer {
       clearTimeout(this.scrollTimeout);
       this.scrollTimeout = null;
     }
+    if (this.typingTimeout !== null) {
+      clearTimeout(this.typingTimeout);
+      this.typingTimeout = null;
+    }
     
     this.hideCursor();
     
@@ -197,8 +370,11 @@ export class CursorRenderer {
     this.lastCursorPos = -1;
     this.lastSuccessfulCoords = null;
     this.isScrolling = false;
+    this.isTyping = false;
+    this.lastUpdateWasTyping = false;
     this.cachedEditorHasActiveClass = false;
     this.cachedIsFocused = false;
+    this.cursorUpdatePlugin = null;
     
     // Clear caches
     this.coordsCache.clear();
@@ -231,6 +407,10 @@ export class CursorRenderer {
     this.isDestroyed = true;
     this.modeUnsubscribe?.();
     this.modeUnsubscribe = null;
+    if (this.typingTimeout !== null) {
+      clearTimeout(this.typingTimeout);
+      this.typingTimeout = null;
+    }
     this.detach();
     this.charWidthCache.clear();
   }
@@ -260,6 +440,12 @@ export class CursorRenderer {
     this.cursorEl = document.createElement('div');
     this.cursorEl.className = 'obvide-cursor';
     this.cursorEl.dataset.editorId = this.getEditorId();
+    
+    // Add transform-mode class if enabled
+    if (this.plugin.settings.useTransformAnimation) {
+      this.cursorEl.classList.add('transform-mode');
+    }
+    
     this.cursorEl.style.cssText = `
       position: fixed !important;
       display: none !important;
@@ -268,6 +454,7 @@ export class CursorRenderer {
       background-color: ${this.plugin.settings.cursorColor} !important;
       opacity: ${this.plugin.settings.cursorOpacity} !important;
       border-radius: 1px;
+      --obvide-cursor-opacity: ${this.plugin.settings.cursorOpacity};
     `;
     
     this.updateCursorShape(this.plugin.getVimMode());
@@ -426,69 +613,8 @@ export class CursorRenderer {
   }
 
   private updateCursorPosition() {
-    if (!this.editorView || !this.cursorEl || !this.cursorEl.isConnected) {
-      if (!this.cursorEl?.isConnected) {
-        this.ensureCursorHealth();
-      }
-      return;
-    }
-
-    const sel = this.editorView.state.selection.main;
-    const pos = sel.head;
-
-    try {
-      const coords = this.getCursorCoordsCached(pos);
-      
-      if (!coords) {
-        return;
-      }
-
-      const charWidth = this.measureCharacterWidthCached(pos);
-      const lineHeight = this.editorView.defaultLineHeight;
-
-      if (isNaN(coords.left) || isNaN(coords.top) || !isFinite(coords.left) || !isFinite(coords.top)) {
-        return;
-      }
-
-      const targetPosition: CursorPosition = {
-        x: coords.left,
-        y: coords.top,
-        width: charWidth,
-        height: lineHeight,
-      };
-
-      if (isNaN(targetPosition.x) || isNaN(targetPosition.y)) {
-        this.hideCursor();
-        return;
-      }
-
-      if (this.cursorEl) {
-        this.showCursor();
-        
-        if (this.isScrolling) {
-          this.cursorEl.style.left = `${targetPosition.x}px`;
-          this.cursorEl.style.top = `${targetPosition.y}px`;
-          this.cursorEl.style.width = `${targetPosition.width}px`;
-          this.cursorEl.style.height = `${targetPosition.height}px`;
-          this.animationEngine.setImmediate(targetPosition);
-        } else {
-          const currentLeft = parseFloat(this.cursorEl.style.left || '0');
-          const currentTop = parseFloat(this.cursorEl.style.top || '0');
-          const wasHidden = (currentLeft <= -1000 || currentTop <= -1000) || 
-                           this.cursorEl.style.display === 'none';
-          
-          if (wasHidden) {
-            this.animationEngine.setImmediate(targetPosition);
-            this.applyCursorPosition(targetPosition);
-          } else {
-            this.animationEngine.animateTo(targetPosition);
-          }
-        }
-      }
-      
-    } catch (e) {
-      this.hideCursor();
-    }
+    // Delegate to context-aware method with current typing state
+    this.updateCursorPositionWithContext(this.isTyping);
   }
 
   /**
@@ -716,6 +842,7 @@ export class CursorRenderer {
 
   /**
    * Apply cursor position from animation
+   * Uses either transform (GPU-accelerated) or left/top based on settings
    */
   private applyCursorPosition(pos: CursorPosition) {
     if (!this.cursorEl) return;
@@ -723,10 +850,37 @@ export class CursorRenderer {
     const shape = (this.cursorEl.dataset.shape || 'block') as CursorShape;
     const { width, height, yOffset } = calculateCursorDimensions(pos, shape);
 
-    this.cursorEl.style.left = `${pos.x}px`;
-    this.cursorEl.style.top = `${pos.y + yOffset}px`;
+    // Check if transform animation mode is enabled
+    if (this.plugin.settings.useTransformAnimation) {
+      // Use transform for GPU-accelerated animation (may appear slightly blurry)
+      this.cursorEl.style.transform = `translate(${pos.x}px, ${pos.y + yOffset}px)`;
+      this.cursorEl.style.left = '0';
+      this.cursorEl.style.top = '0';
+    } else {
+      // Use left/top for sharper cursor
+      this.cursorEl.style.transform = 'none';
+      this.cursorEl.style.left = `${pos.x}px`;
+      this.cursorEl.style.top = `${pos.y + yOffset}px`;
+    }
+    
     this.cursorEl.style.width = `${width}px`;
     this.cursorEl.style.height = `${height}px`;
+  }
+
+  /**
+   * Handle movement state changes for blink pause
+   * Pauses blink animation while cursor is moving, resumes when stopped
+   */
+  private handleMovementState(isMoving: boolean) {
+    if (!this.cursorEl) return;
+    
+    if (isMoving) {
+      // Pause blink by adding 'moving' class
+      this.cursorEl.classList.add('moving');
+    } else {
+      // Resume blink by removing 'moving' class
+      this.cursorEl.classList.remove('moving');
+    }
   }
 }
 

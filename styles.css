@@ -8,6 +8,19 @@
   transition-timing-function: cubic-bezier(0.25, 0.1, 0.25, 1);
 }
 
+/* Pause blink animation while cursor is moving */
+.obvide-cursor.moving {
+  animation: none !important;
+  opacity: var(--obvide-cursor-opacity, 0.8) !important;
+}
+
+/* Transform animation mode - GPU accelerated */
+.obvide-cursor.transform-mode {
+  will-change: transform, width, height;
+  /* Enable GPU acceleration */
+  transform: translateZ(0);
+}
+
 /* Visual mode selection highlight */
 .obvide-visual-selection {
   position: absolute;

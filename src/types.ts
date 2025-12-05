@@ -51,6 +51,13 @@ export interface ObVideSettings {
   cursorShapes: CursorShapeConfig;
   enableInNonEditor: boolean;
   debug: boolean;
+  
+  // Insert mode (typing) animation settings
+  enableInsertModeAnimation: boolean;
+  insertModeAnimationDuration: number;
+  
+  // CSS transform mode for smoother animation (may appear slightly blurry)
+  useTransformAnimation: boolean;
 }
 
 /**
@@ -70,5 +77,12 @@ export const DEFAULT_SETTINGS: ObVideSettings = {
   },
   enableInNonEditor: true,
   debug: false,
+  
+  // Insert mode animation defaults
+  enableInsertModeAnimation: true,
+  insertModeAnimationDuration: 50,
+  
+  // Transform animation default (off for sharper cursor)
+  useTransformAnimation: false,
 };
 
