@@ -69,13 +69,13 @@ export interface SmoothCursorSettings {
  */
 export const DEFAULT_SETTINGS: SmoothCursorSettings = {
   enableAnimation: true,
-  animationDuration: 100,
+  animationDuration: 60,
   cursorColor: '#528bff',
   cursorOpacity: 0.8,
   cursorShapes: {
     normal: 'block',
     insert: 'line',
-    visual: 'block',
+    visual: 'line',
     replace: 'underline',
     command: 'block',
   },
@@ -83,14 +83,14 @@ export const DEFAULT_SETTINGS: SmoothCursorSettings = {
   
   // Insert mode animation defaults
   enableInsertModeAnimation: true,
-  insertModeAnimationDuration: 50,
+  insertModeAnimationDuration: 30,
   
   // Transform animation default (off for sharper cursor)
   useTransformAnimation: false,
   
   // Breathing animation defaults
   enableBreathingAnimation: true,
-  breathingAnimationDuration: 2, // 2 seconds per cycle
+  breathingAnimationDuration: 1.6, // 1.6 seconds per cycle
   breathingMinOpacity: 0.3, // fade to 30% opacity
 };
 
